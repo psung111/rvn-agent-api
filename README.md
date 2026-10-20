@@ -124,3 +124,16 @@ callbacks) are the next slice.
 
 Phase 0 (this repo) → Phase 1 (Postgres, approvals channel, live testnet hardening,
 MCP server) → Phase 2 (fleet provisioning, anomaly detection, mainnet-ready ops).
+
+## License
+
+Copyright (C) 2026 Paul Sung.
+
+This project is licensed under the **GNU Affero General Public License v3.0**
+(see [LICENSE](LICENSE)). In plain terms: you may use, modify, and distribute
+this code, but if you run a modified version as a network service, you must
+make your source changes available under the same license.
+
+**Commercial licensing:** if AGPL doesn't fit your use — for example, embedding
+this in a closed commercial product or service — commercial licenses are
+available from the copyright holder. Open an issue on this repository to ask.
