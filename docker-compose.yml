@@ -1,0 +1,26 @@
+# Local Postgres for rvn-agent-api persistence.
+#
+#   docker compose up -d
+#   export RVN_DATABASE_URL=postgres://rvn:rvn@localhost:5432/rvn_agent_api
+#   pnpm dev
+#
+# The schema is mounted into /docker-entrypoint-initdb.d so a fresh volume
+# comes up with the tables already created. The API also applies
+# src/store/schema.sql idempotently at startup, so an existing database is
+# safe to reuse. Tear down with: docker compose down -v
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: rvn_agent_api
+      POSTGRES_USER: rvn
+      POSTGRES_PASSWORD: rvn
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./src/store/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+
+volumes:
+  pgdata: {}

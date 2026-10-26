@@ -75,6 +75,99 @@ export class MockRvnNode implements RvnNode {
     return `mock-txid-${randomUUID()}`;
   }
 
+  async reissueAsset(opts: {
+    name: string;
+    qty: string;
+    toAddress: string;
+    reissuable?: boolean;
+    newUnits?: number;
+    newIpfsHash?: string;
+  }): Promise<string> {
+    const name = opts.name.toUpperCase();
+    const asset = this.assets.get(name);
+    if (!asset) throw new Error(`unknown asset ${name}`);
+    if (!asset.reissuable) throw new Error(`asset ${name} is not reissuable`);
+    const qty = BigInt(opts.qty);
+    if (qty <= 0n) throw new Error('qty must be positive');
+    if (opts.newUnits !== undefined) {
+      if (!Number.isInteger(opts.newUnits) || opts.newUnits < 0 || opts.newUnits > 8) {
+        throw new Error('newUnits must be an integer in 0..8');
+      }
+      asset.units = opts.newUnits;
+    }
+    if (opts.newIpfsHash !== undefined) asset.ipfsHash = opts.newIpfsHash;
+    if (opts.reissuable !== undefined) asset.reissuable = opts.reissuable;
+    this.addresses.add(opts.toAddress);
+    asset.balances.set(opts.toAddress, (asset.balances.get(opts.toAddress) ?? 0n) + qty);
+    asset.amount = String(BigInt(asset.amount) + qty);
+    this.blocks += 1;
+    return `mock-txid-${randomUUID()}`;
+  }
+
+  async issueSubAsset(opts: {
+    name: string;
+    qty: string;
+    toAddress: string;
+    units?: number;
+    reissuable?: boolean;
+    ipfsHash?: string;
+  }): Promise<string> {
+    const name = opts.name.toUpperCase();
+    const segments = name.split('/');
+    // Node-level shape rule: every segment 1..30 chars of the asset alphabet.
+    // (Policy per-segment matching happens in the policy engine, not here.)
+    if (segments.length < 2 || segments.some((s) => !/^[A-Z0-9._]{1,30}$/.test(s))) {
+      throw new Error(`invalid sub-asset name ${name}`);
+    }
+    if (this.assets.has(name)) throw new Error(`asset ${name} already exists`);
+    const parent = segments.slice(0, -1).join('/');
+    if (!this.assets.has(parent)) throw new Error(`unknown parent asset ${parent}`);
+    const qty = BigInt(opts.qty);
+    if (qty <= 0n) throw new Error('qty must be positive');
+    this.addresses.add(opts.toAddress);
+    this.assets.set(name, {
+      name,
+      amount: opts.qty,
+      units: opts.units ?? 0,
+      reissuable: opts.reissuable ?? true,
+      ipfsHash: opts.ipfsHash,
+      balances: new Map([[opts.toAddress, qty]]),
+    });
+    this.blocks += 1;
+    return `mock-txid-${randomUUID()}`;
+  }
+
+  async issueUniqueAsset(opts: {
+    name: string;
+    toAddress: string;
+    ipfsHash?: string;
+  }): Promise<string> {
+    // The API uppercases asset names before they reach the node (as with
+    // every other kind), so tags are case-insensitive here even though
+    // ravend itself allows lowercase tags.
+    const name = opts.name.toUpperCase();
+    const parts = name.split('#');
+    if (parts.length !== 2) throw new Error(`invalid unique asset name ${opts.name}`);
+    const [root, tag] = parts;
+    if (!root || !/^[A-Za-z0-9._-]{1,30}$/.test(tag)) {
+      throw new Error(`invalid unique asset tag in ${opts.name}`);
+    }
+    if (this.assets.has(name)) throw new Error(`asset ${name} already exists`);
+    if (!this.assets.has(root)) throw new Error(`unknown root asset ${root}`);
+    // A unique asset is a singleton: amount 1, units 0, never reissuable.
+    this.addresses.add(opts.toAddress);
+    this.assets.set(name, {
+      name,
+      amount: '1',
+      units: 0,
+      reissuable: false,
+      ipfsHash: opts.ipfsHash,
+      balances: new Map([[opts.toAddress, 1n]]),
+    });
+    this.blocks += 1;
+    return `mock-txid-${randomUUID()}`;
+  }
+
   async listAssets(pattern = '*'): Promise<AssetInfo[]> {
     const re = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
     return [...this.assets.values()]

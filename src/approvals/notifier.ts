@@ -70,7 +70,11 @@ export function chatIdFor(config: TelegramConfig, agentId: string): string {
 }
 
 function opLabel(intent: RvnIntent): string {
-  return intent.kind === 'issue_asset' ? 'ISSUE' : 'TRANSFER';
+  if (intent.kind === 'issue_asset') return 'ISSUE';
+  if (intent.kind === 'reissue_asset') return 'REISSUE';
+  if (intent.kind === 'issue_subasset') return 'SUBASSET';
+  if (intent.kind === 'issue_unique') return 'UNIQUE';
+  return 'TRANSFER';
 }
 
 /**

@@ -51,14 +51,19 @@ verifies clean.
 | GET | `/v1/health` | node info (mock or real) |
 | POST | `/v1/wallets` | provision an agent wallet address |
 | POST | `/v1/assets/issue` | issue a new asset (policy-gated) |
+| POST | `/v1/assets/reissue` | reissue more supply of an existing reissuable asset (policy-gated like an issue; optional `reissuable`, `newUnits` 0–8, `newIpfsHash` — `newUnits` required when `newIpfsHash` is set) |
 | POST | `/v1/assets/transfer` | transfer an asset (policy-gated) |
 | GET | `/v1/assets?pattern=` | list assets |
 | GET | `/v1/assets/:name` | asset details |
+| POST | `/v1/intents/simulate` | dry-run an issue/reissue/transfer through policy — no side effects |
 | POST | `/v1/intents/:id/approve` | approve a held intent |
+| POST | `/v1/intents/:id/deny` | deny a held intent |
 | GET | `/v1/intents/pending` | intents awaiting approval |
 | GET | `/v1/audit` | hash-chained audit trail (`chainValid`) |
 | GET | `/v1/policies/:agentId` | fetch an agent's policy |
 | PUT | `/v1/policies/:agentId` | replace an agent's policy |
+| GET | `/v1/policies/presets` | list the policy presets (conservative / balanced / permissive) |
+| POST | `/v1/policies/:agentId/preset` | apply a preset to an agent, with optional per-agent `overrides` |
 
 Policy defaults (`src/policy/presets.ts`): per-issue cap 100k units, approval above
 10k, 24h issue budget 500k, transfers to unknown destinations require approval,
@@ -78,8 +83,9 @@ AI agents can call the API natively instead of raw REST. Start the REST API
 }
 ```
 
-Tools: `issue_asset`, `transfer_asset`, `approve_intent`, `pending_intents`,
-`list_assets`, `get_audit`, `get_policy`, `set_policy`. Every tool
+Tools: `issue_asset`, `reissue_asset`, `transfer_asset`, `simulate_intent`,
+`approve_intent`, `deny_intent`, `pending_intents`, `list_assets`, `get_audit`,
+`get_policy`, `set_policy`. Every tool
 call runs through the policy engine and audit exactly like a REST call —
 the MCP server is transport only. Verify with `pnpm mcp-smoke` (API must be
 running).
@@ -101,8 +107,10 @@ entries, or message text; notification failures are audited as
 `APPROVAL_NOTIFICATION_FAILED` and never fail the hold itself. Unset both vars
 and notifications stay disabled — the intent just waits for
 `POST /v1/intents/:id/approve`. `/v1/health` reports
-`approvals.telegramConfigured`. Inline Approve/Deny buttons (inbound Telegram
-callbacks) are the next slice.
+`approvals.telegramConfigured`. Hold notifications also carry inline
+Approve/Deny buttons: taps arrive as callback queries on
+`POST /v1/telegram/webhook` and resolve the intent the same way the HTTP
+routes do.
 
 ## Going live (testnet)
 
@@ -112,12 +120,25 @@ callbacks) are the next slice.
 4. Verify RPC shapes against your node: `ravend help issue` — parameter order matters
    and varies slightly across versions; see `src/rvn/client.ts`.
 
+## Persistence
+
+By default everything (policies, intents, decisions, issue ledger, audit
+chain) lives in process memory — restart the API and it's gone. To persist:
+
+1. `docker compose up -d` (postgres:16-alpine; the schema is created automatically)
+2. `export RVN_DATABASE_URL=postgres://rvn:rvn@localhost:5432/rvn_agent_api`
+3. Restart the API. `/v1/health` reports `"store": "postgres"`.
+
+If the database is unreachable the API still boots on the in-memory store and
+logs a warning — nothing is persisted in that mode. `pnpm test:store` runs the
+store test suite; set `TEST_DATABASE_URL` to also run it against a live Postgres.
+
 ## What's stubbed
 
-- **Persistence** — policies, intents, ledger and audit are in-memory.
 - **Approvals channel** — approvals are an HTTP call plus Telegram hold
-  notifications; inbound Approve/Deny buttons are the next slice.
-- **Reissuance / unique assets** — `issueunique` and sub-assets aren't exposed yet.
+  notifications with inline Approve/Deny buttons.
+- **Unique assets / sub-assets** — `reissue` is exposed (`POST /v1/assets/reissue`,
+  `reissue_asset` MCP tool); `issueunique` and sub-asset issuance aren't yet.
 - **Agent adapters** — LangChain tool wrapper around the REST API (MCP server done in v0.2.0).
 
 ## Roadmap

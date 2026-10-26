@@ -3,17 +3,57 @@ import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from './types.js';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const norm = (s: string) => s.trim().toLowerCase();
 
-/** In-memory rolling-window ledger. Phase 2: Postgres. */
+/**
+ * Issue, reissue, sub-asset, and unique-asset issuance all create new
+ * supply, so they share the same policy dimensions: per-op issue cap,
+ * rolling 24h issue budget, and the issue approval threshold (with the
+ * ISSUE_* reason codes). A unique asset always counts 1 against the budget.
+ */
+export function createsSupply(kind: RvnIntent['kind']): boolean {
+  return kind === 'issue_asset' || kind === 'reissue_asset' || kind === 'issue_subasset' || kind === 'issue_unique';
+}
+
+/**
+ * Asset-name check against the policy pattern. Plain and reissued assets
+ * match the pattern as a whole; a sub-asset name is `PARENT[/CHILD...]`,
+ * so every slash-separated segment must match the pattern and there must
+ * be at least two segments (a bare parent is an issue, not a sub-asset).
+ * A unique asset is `ROOT#TAG` (the root may itself be a sub-asset, e.g.
+ * `ART/DAVINCI#MONALISA`): every slash-separated segment of the root must
+ * match the pattern, there must be exactly one '#', and the tag — whose
+ * on-chain charset is wider than root names — must be 1..30 chars of
+ * letters, digits, '.', '_' or '-'.
+ */
+export function nameMatchesPattern(
+  kind: RvnIntent['kind'],
+  name: string,
+  pattern: string,
+): boolean {
+  const re = new RegExp(pattern);
+  if (kind === 'issue_unique') {
+    const parts = name.split('#');
+    if (parts.length !== 2) return false;
+    const [root, tag] = parts;
+    if (!/^[A-Za-z0-9._-]{1,30}$/.test(tag)) return false;
+    const segments = root.split('/');
+    return segments.length >= 1 && segments.every((s) => re.test(s));
+  }
+  if (kind !== 'issue_subasset') return re.test(name);
+  const segments = name.split('/');
+  return segments.length >= 2 && segments.every((s) => re.test(s));
+}
+
+/** In-memory rolling-window ledger. The Postgres equivalent lives in src/store. */
 export class InMemoryIssueLedger implements IssueLedger {
   private issues = new Map<string, Array<{ atMs: number; qty: bigint }>>();
 
-  recordIssue(agentId: string, qtyBaseUnits: bigint, atMs: number): void {
+  async recordIssue(agentId: string, qtyBaseUnits: bigint, atMs: number): Promise<void> {
     const list = this.issues.get(agentId) ?? [];
     list.push({ atMs, qty: qtyBaseUnits });
     this.issues.set(agentId, list);
   }
 
-  issuedInWindow(agentId: string, windowMs: number, nowMs: number): bigint {
+  async issuedInWindow(agentId: string, windowMs: number, nowMs: number): Promise<bigint> {
     const cutoff = nowMs - windowMs;
     const list = this.issues.get(agentId) ?? [];
     const fresh = list.filter((s) => s.atMs >= cutoff);
@@ -49,12 +89,12 @@ export function isExpired(decision: Decision, nowMs: number = Date.now()): boole
  *   2. Approval routing — unknown destination, above approval thresholds
  *   3. Allow
  */
-export function evaluateIntent(
+export async function evaluateIntent(
   intent: RvnIntent,
   policy: RvnPolicy,
   ledger: IssueLedger,
   nowMs: number = Date.now(),
-): Decision {
+): Promise<Decision> {
   const qty = BigInt(intent.qtyBaseUnits);
   const dest = norm(intent.destination);
 
@@ -63,7 +103,7 @@ export function evaluateIntent(
     return decide(intent, 'DENY', ['DESTINATION_BLOCKED'], policy, nowMs);
   }
 
-  if (!new RegExp(policy.assetNamePattern).test(intent.assetName)) {
+  if (!nameMatchesPattern(intent.kind, intent.assetName, policy.assetNamePattern)) {
     return decide(intent, 'DENY', ['ASSET_NAME_REJECTED'], policy, nowMs);
   }
 
@@ -71,11 +111,11 @@ export function evaluateIntent(
     return decide(intent, 'DENY', ['NON_POSITIVE_QTY'], policy, nowMs);
   }
 
-  if (intent.kind === 'issue_asset') {
+  if (createsSupply(intent.kind)) {
     if (qty > BigInt(policy.maxIssueQtyBaseUnits)) {
       return decide(intent, 'DENY', ['ISSUE_CAP_EXCEEDED'], policy, nowMs);
     }
-    const issued24h = ledger.issuedInWindow(intent.agentId, DAY_MS, nowMs);
+    const issued24h = await ledger.issuedInWindow(intent.agentId, DAY_MS, nowMs);
     if (issued24h + qty > BigInt(policy.dailyIssueBudgetBaseUnits)) {
       return decide(intent, 'DENY', ['DAILY_ISSUE_BUDGET_EXCEEDED'], policy, nowMs);
     }
@@ -94,7 +134,7 @@ export function evaluateIntent(
   }
 
   const approvalThreshold =
-    intent.kind === 'issue_asset'
+    createsSupply(intent.kind)
       ? BigInt(policy.approvalAboveIssueQtyBaseUnits)
       : BigInt(policy.approvalAboveTransferQtyBaseUnits);
   if (qty > approvalThreshold) {

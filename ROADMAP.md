@@ -6,14 +6,105 @@ and logs the result in CHANGELOG.md.
 
 ## Backlog
 
-- [ ] **Postgres persistence** — move policies, intents, ledger and audit from memory
-  to Postgres (docker-compose); keep in-memory as fallback when DB is unreachable.
-- [ ] **Simulation endpoint** — `POST /v1/intents/simulate` returns the policy decision
-  without executing, recording spend, or touching the audit chain.
-- [ ] **Reissuance + unique assets** — expose `reissue`, `issueunique` and sub-asset
-  issuance through the same policy-gated flow.
-- [ ] **Policy presets gallery** — conservative / balanced / permissive presets plus
-  per-agent overrides; `GET /v1/policies/presets`.
+- [x] 2026-10-22 — v0.7.0 Postgres persistence (item complete): new
+  `src/store/` seam — `Store` interface (policies / intents+decisions /
+  async issue ledger / hash-chained audit) with two backends. `PostgresStore`
+  (`pg` pool) persists everything to Postgres: JSONB tables for policies,
+  intents and decisions, a `ledger_spend` table with in-SQL rolling-window
+  sums (bigint quantities as decimal strings, never floats), and
+  `audit_entries` where appends are serialized with a
+  `pg_advisory_xact_lock` so the hash chain can never fork; audit details are
+  canonicalized (recursively key-sorted) and stored as TEXT for a byte-exact
+  round-trip (JSONB reorders keys, which broke verification in testing). Both backends
+  build entries through the shared `makeChainedEntry`/`verifyChain` helpers
+  so chains are byte-identical. `storeFromEnv()` picks Postgres when
+  `RVN_DATABASE_URL` (or `DATABASE_URL`) is set and reachable — applying
+  `src/store/schema.sql` idempotently at startup — and falls back to the
+  in-memory store with a loud log line on any failure, so the API always
+  boots; default policy is seeded when absent. `IssueLedger` and
+  `evaluateIntent` are now async. `/v1/health` reports `store:
+  'postgres'|'memory'`. New `docker-compose.yml` (postgres:16-alpine, schema
+  mounted into initdb.d). New `pnpm test:store` (`demo/store-test.ts`, 18
+  checks: the full suite against the memory store, the same suite against a
+  live Postgres when `TEST_DATABASE_URL` is set, plus fallback-on-unreachable
+  behavior) — all green. `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`, `pnpm test:simulate`
+  still green. Package is now `"type": "module"` (imports already used ESM
+  `.js` specifiers). Follow-ups: schema migrations (today it's
+  CREATE-IF-NOT-EXISTS only — no alter path), audit-table partitioning as the
+  chain grows.
+- [x] 2026-10-21 — v0.6.0 Simulation endpoint (item complete): new
+  `POST /v1/intents/simulate` returns the policy decision an issue/transfer
+  WOULD get — ALLOW / REQUIRE_APPROVAL / DENY with reason codes — without
+  persisting the intent, recording issue spend, touching the audit chain,
+  notifying approvers, or executing anything. Simulated decision ids are
+  `sim-<uuid>` namespaced and approving/denying one 404s. Field aliases
+  (`name`/`toAddress`) accepted; invalid bodies (bad op, missing fields,
+  non-integer qty) return 400. New `simulate_intent` MCP tool (keeps the
+  "MCP covers every REST route" invariant). Verified with
+  `demo/simulate-test.ts` (33 checks: decisions per path, zero-side-effect
+  proofs — audit seq unchanged, pending list empty, budget accounting reads
+  but never writes — 404 on approve/deny of simulated ids, 400 cases) and a
+  new MCP smoke section (3 checks). `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback` all still green.
+- [x] **Reissuance + unique assets** — expose `reissue`, `issueunique` and sub-asset
+  issuance through the same policy-gated flow (item complete).
+  - [x] 2026-10-23 — v0.8.0 reissue (slice 1, item partial): `reissueAsset` on the
+    node seam (mock + real `reissue` RPC client), `POST /v1/assets/reissue` and the
+    `reissue_asset` MCP tool, new `reissue_asset` intent kind evaluated exactly like
+    an issue (per-op cap, shared 24h issue budget, approval threshold, allowlist,
+    name pattern — ledger records reissues against the budget). Extra params
+    (`reissuable`, `newUnits` 0–8, `newIpfsHash`, positional so `newIpfsHash`
+    requires `newUnits`) are captured on `RvnIntent.execParams` and replayed at
+    approval time — this also fixed the issue route silently dropping
+    `units`/`reissuable`/`ipfsHash` for held intents (plus JSON-boolean
+    `reissuable` parsing). `simulate` accepts `op: 'reissue'`. Verified with new
+    `pnpm test:reissue` (51 checks), 5 new MCP smoke checks; demo, approvals,
+    telegram-callback, simulate, store suites still green.
+  - [x] 2026-10-24 — v0.9.0 sub-asset issuance (slice 2, item partial):
+    `issueSubAsset` on the node seam (mock enforces parent-exists + per-segment
+    shape; real client delegates to ravend's `issue` RPC, which treats a slash
+    name as a sub-asset), `POST /v1/assets/issue-subasset` and the
+    `issue_subasset` MCP tool, new `issue_subasset` intent kind evaluated
+    exactly like an issue (per-op cap, shared 24h issue budget, approval
+    threshold, allowlist) except the asset-name pattern is applied to every
+    slash-separated segment, and nested sub-assets (`PARENT/CHILD/GRAND`)
+    work when the immediate parent exists. Extra params (`units`/`reissuable`/
+    `ipfsHash`) captured on `execParams` and replayed at approval time.
+    `simulate` accepts `op: 'subasset'`. Verified with new
+    `pnpm test:subasset` (55 checks), 5 new MCP smoke checks; demo, approvals,
+    telegram-callback, simulate, reissue, store suites still green.
+  - [x] 2026-10-25 — v0.10.0 unique assets (slice 3, item complete):
+    `issueUniqueAsset` on the node seam (mock enforces root-exists,
+    exactly-one-`#`, and tag shape; real client calls ravend's
+    `issueunique` with `[root, [tag], ipfsHash, toAddress, '']`),
+    `POST /v1/assets/issue-unique` and the `issue_unique` MCP tool, new
+    `issue_unique` intent kind evaluated exactly like an issue (per-op cap,
+    shared 24h issue budget with each unique counting 1, approval threshold,
+    allowlist) except the asset-name pattern is applied to every
+    slash-separated segment of the root and the tag is checked separately
+    (1–30 chars, wider charset). Unique assets are singletons: qty fixed
+    at 1 (route 400s anything else, omitted qty defaults to 1), amount 1,
+    units 0, never reissuable — and reissuing one is denied at the policy
+    layer since `#` is not in the reissue name pattern. `simulate`
+    accepts `op: 'unique'` (qty normalized to 1). Verified with new
+    `pnpm test:unique` (58 checks), 5 new MCP smoke checks; demo, approvals,
+    telegram-callback, simulate, reissue, subasset, store suites still green.
+- [x] 2026-10-26 — v0.11.0 Policy presets gallery (item complete):
+  `POLICY_PRESETS` in `src/policy/presets.ts` — conservative (tight caps,
+  low thresholds, empty allowlist), balanced (the Phase-0 default), and
+  permissive (high caps/thresholds, wildcard allowlist, 1h TTL) — plus
+  `applyPreset()` which merges per-agent overrides onto a preset and
+  rejects unknown presets/fields and malformed values (non-integer qty,
+  negative qty, non-positive TTL, bad regex, non-array destinations) before
+  anything is stored. `GET /v1/policies/presets` lists the gallery;
+  `POST /v1/policies/:agentId/preset` applies a preset wholesale (same
+  replace semantics as PUT, audited as POLICY_REPLACED naming the preset).
+  New `list_presets` / `apply_preset` MCP tools keep the "MCP covers every
+  REST route" invariant. Verified with new `pnpm test:presets`
+  (`demo/preset-test.ts`, 32 checks) and 4 new MCP smoke checks; demo,
+  approvals, telegram-callback, simulate, reissue, subasset, unique, store
+  suites still green.
 - [ ] **Anomaly detection** — flag statistically unusual intents (qty outlier for the
   agent, first-seen destination velocity) with a new `ANOMALY_SUSPECTED` reason code
   that routes to REQUIRE_APPROVAL.

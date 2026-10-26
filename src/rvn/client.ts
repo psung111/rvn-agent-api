@@ -64,6 +64,54 @@ export class RvnRpcClient implements RvnNode {
     return this.call<string>('transfer', [assetName, Number(qty), toAddress]);
   }
 
+  async reissueAsset(opts: {
+    name: string;
+    qty: string;
+    toAddress: string;
+    reissuable?: boolean;
+    newUnits?: number;
+    newIpfsHash?: string;
+  }): Promise<string> {
+    // reissue "asset_name" qty "to_address" change_address reissuable new_units new_ipfs_hash
+    // (params are positional: new_ipfs_hash can only be set when new_units is too)
+    const params: unknown[] = [opts.name, Number(opts.qty), opts.toAddress, '', opts.reissuable ?? true];
+    if (opts.newUnits !== undefined) {
+      params.push(opts.newUnits);
+      if (opts.newIpfsHash !== undefined) params.push(opts.newIpfsHash);
+    }
+    return this.call<string>('reissue', params);
+  }
+
+  async issueSubAsset(opts: {
+    name: string;
+    qty: string;
+    toAddress: string;
+    units?: number;
+    reissuable?: boolean;
+    ipfsHash?: string;
+  }): Promise<string> {
+    // ravend issues sub-assets through the same `issue` RPC — the slash
+    // name is what makes it a sub-asset, and ravend itself enforces that
+    // the parent exists and is owned by the issuer's wallet.
+    return this.issueAsset(opts);
+  }
+
+  async issueUniqueAsset(opts: {
+    name: string;
+    toAddress: string;
+    ipfsHash?: string;
+  }): Promise<string> {
+    // issueunique "root_name" ["tag", ...] "ipfs_hash" "to_address" "change_address"
+    // — one tag per API call, so the tag list has a single entry. The tag
+    // charset is wider than root names (lowercase allowed on-chain), but
+    // the API uppercases names before they reach the node.
+    const [root, tag] = opts.name.split('#');
+    if (root === undefined || tag === undefined || opts.name.split('#').length !== 2) {
+      throw new Error(`invalid unique asset name ${opts.name}`);
+    }
+    return this.call<string>('issueunique', [root, [tag], opts.ipfsHash ?? '', opts.toAddress, '']);
+  }
+
   async listAssets(pattern = '*'): Promise<AssetInfo[]> {
     // listassets "( asset_name )" verbose — verbose=true returns per-asset objects
     const raw = await this.call<Record<string, { amount: number; units: number; reissuable: number; ipfs_hash?: string }>>(

@@ -69,7 +69,7 @@ export function formatResolvedMessage(
   approver: string,
   txid?: string,
 ): string {
-  const op = intent.kind === 'issue_asset' ? 'ISSUE' : 'TRANSFER';
+  const op = intent.kind === 'issue_asset' ? 'ISSUE' : intent.kind === 'reissue_asset' ? 'REISSUE' : intent.kind === 'issue_unique' ? 'UNIQUE' : 'TRANSFER';
   const headline =
     action === 'approve' ? `✅ Intent approved — RVN agent intent` : `❌ Intent denied — RVN agent intent`;
   const verdict =
