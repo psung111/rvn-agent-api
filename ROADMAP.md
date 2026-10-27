@@ -105,9 +105,24 @@ and logs the result in CHANGELOG.md.
   (`demo/preset-test.ts`, 32 checks) and 4 new MCP smoke checks; demo,
   approvals, telegram-callback, simulate, reissue, subasset, unique, store
   suites still green.
-- [ ] **Anomaly detection** — flag statistically unusual intents (qty outlier for the
-  agent, first-seen destination velocity) with a new `ANOMALY_SUSPECTED` reason code
-  that routes to REQUIRE_APPROVAL.
+- [x] 2026-10-27 — v0.12.0 Anomaly detection (item complete): new
+  `src/policy/anomaly.ts` — pure `detectAnomalies()` with two signals.
+  `QTY_OUTLIER`: qty more than 10x the median of the agent's prior
+  same-kind intents (at least 3 samples; fewer means no baseline, never a
+  flag). `FIRST_SEEN_DESTINATION_BURST`: a destination never seen in the
+  agent's history, arriving while the agent submitted 3+ intents in the
+  last hour. Either signal routes a would-be-ALLOW intent to
+  REQUIRE_APPROVAL with reason code `ANOMALY_SUSPECTED` — a hold, never a
+  deny; hard denies still win, and already-held intents keep their original
+  reason. `IntentStore.history(agentId)` (memory + Postgres, newest first)
+  supplies the baseline; the server fetches it before storing the intent
+  under evaluation, and simulate reads it without writing, so simulations
+  never pollute the baseline. Verified with new `pnpm test:anomaly`
+  (`demo/anomaly-test.ts`, 43 checks) and history checks in
+  `pnpm test:store`; demo, approvals, telegram-callback, simulate,
+  reissue, subasset, unique, presets, mcp-smoke still green. Follow-ups:
+  anomaly thresholds (multiplier, burst window/count) as policy fields
+  instead of constants; an anomaly-stats endpoint.
 - [ ] **LangChain tool adapter** — wrap the REST API as LangChain tools for Python agents.
 - [ ] **Webhooks** — POST decision/execution events to a configured URL.
 - [ ] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension.

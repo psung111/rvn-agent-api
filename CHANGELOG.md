@@ -1,5 +1,63 @@
 # Changelog
 
+## 2026-10-27 — v0.12.0 (Anomaly detection, item complete)
+
+- New `src/policy/anomaly.ts`: pure `detectAnomalies(intent, history,
+  nowMs)` returning `QTY_OUTLIER` / `FIRST_SEEN_DESTINATION_BURST`
+  signals. Qty outlier: the intent's qty exceeds 10x the median qty of
+  the agent's prior intents of the same kind, requiring at least 3
+  samples (median, not mean, so one past whale can't drag the baseline;
+  even counts use the lower median, the conservative side for a
+  hold-not-deny signal). First-seen burst: the destination never appears
+  in the agent's history and the agent submitted 3+ intents in the last
+  hour — a new destination alone is not suspicious (the allowlist gate
+  already handles it); a new destination mid-burst is what looks like a
+  compromised agent spraying funds somewhere new. History entries with
+  unparseable or non-positive qtys are ignored; the intent under
+  evaluation is excluded by id, so approval-time re-evaluation can't
+  flag itself.
+- `evaluateIntent` takes an optional `history` argument (default `[]`,
+  so existing callers are unaffected) and gains a Stage-2b anomaly gate:
+  after the hard denies and the existing approval routing, a
+  would-be-ALLOW intent with any anomaly signal becomes
+  REQUIRE_APPROVAL with reason code `ANOMALY_SUSPECTED`. Hard denies
+  still win, and intents already held for an unknown destination or an
+  above-threshold qty keep their original reason — the gate exists to
+  catch the case the other gates miss, an intent that looks policy-clean
+  but statistically strange. An anomalous hold approves through the
+  normal path like any other hold.
+- New `IntentStore.history(agentId, limit?)` (newest first, default 200):
+  in-memory filter + sort, Postgres via
+  `intent->>'agentId'` with a `(intent->>'requestedAtMs')::bigint`
+  ordering. The server fetches history before storing the intent under
+  evaluation in `submit`, at approval-time re-evaluation in
+  `resolveApproval`, and in `simulate` — where the read is strictly
+  read-only, so a simulation runs the same anomaly gate as a real submit
+  but never enters the baseline.
+- New `pnpm test:anomaly` (`demo/anomaly-test.ts`): 43 checks — qty
+  outlier holds with `ANOMALY_SUSPECTED` and approves normally; exactly
+  10x the median ALLOWs (strictly-greater rule); a fresh agent's first
+  issue ALLOWs (no baseline, no false positive); first-seen destination
+  inside a burst holds and approves, while the same issue with only 2
+  recent intents ALLOWs; an over-cap outlier DENYs with
+  `ISSUE_CAP_EXCEEDED` and no `ANOMALY_SUSPECTED`; simulate runs the
+  gate with zero side effects (audit seq unchanged, pending empty, later
+  real issue unaffected); audit chain valid — all green.
+  `demo/store-test.ts` gained history checks (newest-first order,
+  per-agent filtering, limit) run against both backends.
+  `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:store` still green. No new REST route
+  or MCP tool (the gate rides the existing evaluation path), so the MCP
+  surface is unchanged. `initialize` now reports server version 0.12.0.
+- Environment note: no `pnpm`
+  binary on this VM — verification ran the direct equivalents
+  (`node_modules/.bin/tsc`, `node_modules/.bin/tsx`); `package.json` scripts
+  are unchanged in content apart from the new `test:anomaly` script.
+- The anomaly detection roadmap item is complete; the next top item is
+  the LangChain tool adapter.
+
 ## 2026-10-26 — v0.11.0 (Policy presets gallery, item complete)
 
 - New `POLICY_PRESETS` in `src/policy/presets.ts`: three named starting

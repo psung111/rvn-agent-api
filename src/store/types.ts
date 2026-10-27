@@ -15,6 +15,12 @@ export interface IntentStore {
   getDecision(intentId: string): Promise<Decision | undefined>;
   /** Held intents whose approval window has not expired yet. */
   pending(nowMs?: number): Promise<Array<{ intent: RvnIntent; decision: Decision }>>;
+  /**
+   * Most recent intents for one agent, newest first, for the anomaly
+   * detector's baseline. The caller asks before storing the intent under
+   * evaluation, so the current intent is not in the result.
+   */
+  history(agentId: string, limit?: number): Promise<RvnIntent[]>;
 }
 
 /** Hash-chained audit log. Implementations must preserve chain order. */

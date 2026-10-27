@@ -78,6 +78,22 @@ async function runSuite(label: string, store: Store) {
   check('pending lists the held intent', ids.includes(intent.id), ids);
   check('pending excludes expired and resolved intents', !ids.includes(expired.id) && !ids.includes(resolved.id), ids);
 
+  // History: newest-first, filtered by agent (the anomaly baseline).
+  const h1 = { ...makeIntent(`${label}-hist-1`, 'hist-agent'), requestedAtMs: 1000 };
+  const h2 = { ...makeIntent(`${label}-hist-2`, 'hist-agent'), requestedAtMs: 3000 };
+  const h3 = { ...makeIntent(`${label}-hist-3`, 'hist-agent'), requestedAtMs: 2000 };
+  const other = { ...makeIntent(`${label}-hist-other`, 'other-hist-agent'), requestedAtMs: 9999 };
+  await store.intents.putIntent(h1);
+  await store.intents.putIntent(h2);
+  await store.intents.putIntent(h3);
+  await store.intents.putIntent(other);
+  const hist = await store.intents.history('hist-agent');
+  check('history returns only the agent\'s intents, newest first',
+    hist.length === 3 && hist[0].id === h2.id && hist[1].id === h3.id && hist[2].id === h1.id,
+    hist.map((i) => i.id));
+  check('history limit is honored', (await store.intents.history('hist-agent', 2)).length === 2);
+  check('history for an unknown agent is empty', (await store.intents.history('nobody')).length === 0);
+
   // Ledger: rolling window accounting.
   const now = Date.now();
   await store.ledger.recordIssue('ledger-agent', 100n, now - 1000);

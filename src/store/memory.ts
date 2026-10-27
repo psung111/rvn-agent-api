@@ -40,6 +40,13 @@ class MemoryIntentStore implements IntentStore {
     }
     return out;
   }
+  async history(agentId: string, limit = 200): Promise<RvnIntent[]> {
+    const n = Math.min(Math.max(limit, 1), 1000);
+    return [...this.intents.values()]
+      .filter((intent) => intent.agentId === agentId)
+      .sort((a, b) => b.requestedAtMs - a.requestedAtMs)
+      .slice(0, n);
+  }
 }
 
 class MemoryAuditStore implements AuditStore {

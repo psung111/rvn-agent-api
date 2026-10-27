@@ -28,7 +28,8 @@
     "test:subasset": "tsx demo/subasset-test.ts",
     "test:unique": "tsx demo/unique-test.ts",
     "test:presets": "tsx demo/preset-test.ts",
+    "test:anomaly": "tsx demo/anomaly-test.ts",
     "test:store": "tsx demo/store-test.ts"
   },
-  "version": "0.11.0"
+  "version": "0.12.0"
 }

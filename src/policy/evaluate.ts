@@ -1,3 +1,4 @@
+import { detectAnomalies } from './anomaly.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from './types.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -86,14 +87,24 @@ export function isExpired(decision: Decision, nowMs: number = Date.now()): boole
 /**
  * Deterministic evaluation:
  *   1. Hard denies — blocked destination, bad asset name, per-op caps, daily budget
- *   2. Approval routing — unknown destination, above approval thresholds
+ *   2. Approval routing — unknown destination, above approval thresholds,
+ *      anomaly signals (a would-be-ALLOW intent that looks statistically
+ *      unusual is held, never denied, for a human to look at)
  *   3. Allow
+ *
+ * `history` is the agent's previously submitted intents (the caller fetches
+ * it from the intent store before the current intent is stored, so the
+ * current intent is never in it; detectAnomalies also excludes it by id).
+ * With no history the anomaly gate is inert — never a false positive on a
+ * fresh agent — which also keeps the simulate path honest: simulated
+ * intents are never stored, so they never pollute the baseline.
  */
 export async function evaluateIntent(
   intent: RvnIntent,
   policy: RvnPolicy,
   ledger: IssueLedger,
   nowMs: number = Date.now(),
+  history: RvnIntent[] = [],
 ): Promise<Decision> {
   const qty = BigInt(intent.qtyBaseUnits);
   const dest = norm(intent.destination);
@@ -139,6 +150,15 @@ export async function evaluateIntent(
       : BigInt(policy.approvalAboveTransferQtyBaseUnits);
   if (qty > approvalThreshold) {
     return decide(intent, 'REQUIRE_APPROVAL', ['ABOVE_APPROVAL_THRESHOLD'], policy, nowMs);
+  }
+
+  // ---- Stage 2b: anomaly gate — only flips would-be-ALLOW intents ----
+  // Hard denies above still win, and intents already held for an unknown
+  // destination or an above-threshold qty keep their original reason: the
+  // anomaly signal exists to catch the case the other gates miss, an
+  // intent that looks policy-clean but statistically strange.
+  if (detectAnomalies(intent, history, nowMs).length > 0) {
+    return decide(intent, 'REQUIRE_APPROVAL', ['ANOMALY_SUSPECTED'], policy, nowMs);
   }
 
   // ---- Stage 3: allow ----

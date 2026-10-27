@@ -170,7 +170,14 @@ async function main() {
     await store.audit.append('APPROVAL', intent.id, intent.agentId, { approver });
 
     // Re-evaluate at approval time: caps may have moved since the hold.
-    const fresh = await evaluateIntent(intent, await policyFor(intent.agentId), store.ledger);
+    // History includes this intent itself; the detector excludes it by id.
+    const fresh = await evaluateIntent(
+      intent,
+      await policyFor(intent.agentId),
+      store.ledger,
+      Date.now(),
+      await store.intents.history(intent.agentId),
+    );
     if (fresh.kind === 'DENY') {
       await store.audit.append('DECISION', intent.id, intent.agentId, {
         kind: 'DENY', reasonCodes: fresh.reasonCodes, atApproval: true,
@@ -199,7 +206,11 @@ async function main() {
     execute: () => Promise<string>,
     reply: any,
   ) => {
-    const decision = await evaluateIntent(intent, await policyFor(intent.agentId), store.ledger);
+    // History is fetched before the intent is stored, so the anomaly
+    // baseline is the agent's prior intents only — the current intent
+    // never flags itself.
+    const history = await store.intents.history(intent.agentId);
+    const decision = await evaluateIntent(intent, await policyFor(intent.agentId), store.ledger, Date.now(), history);
     await store.intents.putIntent(intent);
     await store.intents.putDecision(intent.id, decision);
     await store.audit.append('DECISION', intent.id, intent.agentId, {
@@ -516,7 +527,15 @@ async function main() {
     };
     // Deliberately pure: no intents.set, no decisions.set, no ledger writes,
     // no audit entries, no approver notifications, no node calls.
-    const decision = await evaluateIntent(intent, await policyFor(intent.agentId), store.ledger);
+    // History is read-only here: a simulation runs the same anomaly gate
+    // as a real submit but never enters the baseline itself.
+    const decision = await evaluateIntent(
+      intent,
+      await policyFor(intent.agentId),
+      store.ledger,
+      Date.now(),
+      await store.intents.history(intent.agentId),
+    );
     return {
       simulated: true,
       decision,

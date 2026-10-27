@@ -71,6 +71,17 @@ class PostgresIntentStore implements IntentStore {
     );
     return rows.map((r) => ({ intent: r.intent as RvnIntent, decision: r.decision as Decision }));
   }
+  async history(agentId: string, limit = 200): Promise<RvnIntent[]> {
+    const n = Math.min(Math.max(limit, 1), 1000);
+    const { rows } = await this.pool.query(
+      `SELECT intent FROM intents
+       WHERE intent->>'agentId' = $1
+       ORDER BY (intent->>'requestedAtMs')::bigint DESC
+       LIMIT $2`,
+      [agentId, n],
+    );
+    return rows.map((r) => r.intent as RvnIntent);
+  }
 }
 
 class PostgresAuditStore implements AuditStore {

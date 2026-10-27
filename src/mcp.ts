@@ -510,7 +510,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.11.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.12.0' },
       });
     }
     case 'notifications/initialized':
