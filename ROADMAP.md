@@ -124,6 +124,26 @@ and logs the result in CHANGELOG.md.
   anomaly thresholds (multiplier, burst window/count) as policy fields
   instead of constants; an anomaly-stats endpoint.
 - [ ] **LangChain tool adapter** — wrap the REST API as LangChain tools for Python agents.
+  - [x] 2026-10-28 — v0.13.0 LangChain adapter (slice 1, item partial):
+    new `langchain_rvn/` Python package. `client.py` is a stdlib-only
+    REST client covering every route (issue / reissue / sub-asset /
+    unique / transfer / list / get / simulate / approve / deny / pending
+    / policy / presets / audit / wallet); quantities stay base-unit
+    decimal strings, and a DENY decision returns its payload on 403
+    instead of raising (other 4xx/5xx raise `RvnApiError`).
+    `tools.py` builds 17 LangChain `StructuredTool`s on that client —
+    one per route, results as JSON strings, holds returned as intent ids
+    (never errors), API rejections as `{"error", "status"}` objects —
+    so the policy engine stays the single enforcement point exactly as
+    with the MCP server. Importing the package never requires
+    langchain-core; only `get_tools()` does. Verified with new
+    `langchain_rvn/test_adapter.py` (27 checks, self-booting API on the
+    mock node: client ALLOW/DENY/hold flows, tool ALLOW/DENY/hold →
+    approve → executed, hold → deny, 409 re-approve, 404 unknown intent,
+    simulate zero-side-effect proof, audit chain valid) plus
+    `pnpm build`, `pnpm demo`, `pnpm mcp-smoke` and every `test:*`
+    suite still green. Remainder: a worked agent-executor example
+    against a real LLM, and PyPI packaging.
 - [ ] **Webhooks** — POST decision/execution events to a configured URL.
 - [ ] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension.
 

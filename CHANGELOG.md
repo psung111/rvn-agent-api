@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-10-28 — v0.13.0 (LangChain tool adapter, slice 1 — item partial)
+
+- New `langchain_rvn/` Python package wrapping the REST API for Python
+  agents. `client.py` is stdlib-only (no third-party deps): `RvnApiClient`
+  covers every route — issue, reissue, sub-asset, unique, transfer, list,
+  get, simulate, approve, deny, pending, policy get/set, preset list/apply,
+  audit, wallet — with quantities as base-unit decimal strings and a DENY
+  decision returned as its payload on 403 (other 4xx/5xx raise
+  `RvnApiError`). `tools.py` builds 17 LangChain `StructuredTool`s on the
+  client, one per route; tool results are JSON strings, held intents come
+  back as intent ids (never errors), and API rejections surface as
+  `{"error", "status"}` objects. The tools proxy to REST exactly like the
+  MCP server does, so the policy engine stays the single enforcement
+  point. Importing `langchain_rvn` never requires langchain-core — only
+  `get_tools()` does, with a clear install hint otherwise.
+- New `langchain_rvn/test_adapter.py` (27 checks, self-booting API on the
+  mock node): client ALLOW/DENY/hold flows, tool ALLOW, tool simulate
+  DENY, hold → approve → executed with txid, hold → deny, 409 on
+  re-approve, 404 on unknown intent, preset list/apply and policy
+  round-trip through tools, wallet provisioning, reissue/sub-asset/unique
+  through the client, simulate zero-side-effect proof (audit entry count
+  unchanged), audit chain valid — all green. The test kills the API's
+  whole process group on exit (tsx spawns a node child that otherwise
+  survives and leaks mock state into the next run).
+- `initialize` now reports server version 0.13.0 (`src/mcp.ts`
+  serverInfo, `package.json`, `langchain_rvn/pyproject.toml`).
+  Environment note: no `pnpm`
+  binary on this VM — verification ran the direct equivalents
+  (`node_modules/.bin/tsc`, `node_modules/.bin/tsx`, plus a venv Python
+  with langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:langchain` script.
+- Remainder of the LangChain item: a worked agent-executor example against
+  a real LLM, and PyPI packaging.
+
 ## 2026-10-27 — v0.12.0 (Anomaly detection, item complete)
 
 - New `src/policy/anomaly.ts`: pure `detectAnomalies(intent, history,

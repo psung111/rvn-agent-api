@@ -90,6 +90,25 @@ call runs through the policy engine and audit exactly like a REST call —
 the MCP server is transport only. Verify with `pnpm mcp-smoke` (API must be
 running).
 
+## LangChain tools (Python agents)
+
+`langchain_rvn/` wraps the same REST API as LangChain tools — same
+policy-engine enforcement, same audit trail, no MCP hop needed:
+
+```python
+from langchain_rvn import RvnApiClient, get_tools
+
+tools = get_tools(RvnApiClient("http://127.0.0.1:3001", agent_id="agent-1"))
+# hand `tools` to any LangChain agent executor
+```
+
+The client (`client.py`) is stdlib-only and covers every route; the 17
+tools (`tools.py`) return JSON strings — decisions with reason codes, held
+intent ids, or `{"error", "status"}` objects. Install with
+`pip install langchain-core` (or `pip install -e langchain_rvn/` once
+packaged). Verify with `pnpm test:langchain`, which boots the API on the
+mock node and exercises the client and every tool.
+
 ## Telegram approval notifications
 
 Every `REQUIRE_APPROVAL` intent fans out to an `ApprovalNotifier`
