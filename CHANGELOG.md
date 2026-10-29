@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-10-29 — v0.14.0 (LangChain tool adapter, slice 2 — item complete)
+
+- New `langchain_rvn/examples/agent_executor.py`: a worked agent-executor
+  example that runs a complete tool-calling loop against a local API on
+  the mock node — allowlist the destination in the example agent's
+  policy, then simulate → issue → audit — using langchain-core's
+  deterministic `GenericFakeChatModel` in place of a real chat model, so
+  it needs no LLM key and touches nothing beyond localhost. The loop
+  invokes tools by name from the model's tool calls and feeds results
+  back as `ToolMessage`s; a REQUIRE_APPROVAL result reports the held
+  intent id and stops instead of auto-approving. Swapping the fake model
+  for a real chat model bound to the tools (`model.bind_tools(tools)`)
+  turns the same loop into a live agent. Verified end to end against a
+  booted mock-node API: simulate ALLOW, issue ALLOW with txid, audit
+  chain valid, exit 0 (the default policy holds issues to unlisted
+  destinations, which is why the example allowlists first — the same
+  step the TS demo takes).
+- PyPI packaging, fixed for real: the v0.13.0 `pyproject.toml` could not
+  build at all — `python -m build` failed with `package directory
+  'langchain_rvn' does not exist`, because that pyproject sits alongside
+  the package files rather than in a parent directory. It now sets
+  `package-dir = { "langchain_rvn" = "." }`, and carries a package
+  README (`langchain_rvn/README.md`: install, usage, example, license),
+  AGPL-3.0-only license metadata, author, classifiers, keywords, and
+  project URLs. Verified: `python -m build` produces a wheel whose only
+  package modules are `__init__`/`client`/`tools`, and installing that
+  wheel in a fresh venv imports cleanly and builds all 17 tools. The
+  adapter test moved from inside the shipped package to
+  `tests/test_adapter.py` (the `test:langchain` script updated; the
+  test's path math is unchanged since `tests/` sits directly under the
+  repo root), so the test no longer rides in the wheel. The package is
+  not on PyPI yet — the actual `twine upload` needs Paul's PyPI
+  account/token and was not performed.
+- `initialize` now reports server version 0.14.0 (`src/mcp.ts`
+  serverInfo, `package.json`, `langchain_rvn/pyproject.toml`).
+  Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`, `node_modules/.bin/tsx`,
+  plus venv Pythons with langchain-core for the adapter test, example,
+  and wheel install); `package.json` scripts are unchanged in content
+  apart from the new `test:langchain` path.
+- The LangChain tool adapter roadmap item is complete; the next top item
+  is Webhooks.
+
 ## 2026-10-28 — v0.13.0 (LangChain tool adapter, slice 1 — item partial)
 
 - New `langchain_rvn/` Python package wrapping the REST API for Python

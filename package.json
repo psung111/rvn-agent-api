@@ -30,7 +30,7 @@
     "test:presets": "tsx demo/preset-test.ts",
     "test:anomaly": "tsx demo/anomaly-test.ts",
     "test:store": "tsx demo/store-test.ts",
-    "test:langchain": "python3 langchain_rvn/test_adapter.py"
+    "test:langchain": "python3 tests/test_adapter.py"
   },
-  "version": "0.13.0"
+  "version": "0.14.0"
 }

@@ -104,10 +104,13 @@ tools = get_tools(RvnApiClient("http://127.0.0.1:3001", agent_id="agent-1"))
 
 The client (`client.py`) is stdlib-only and covers every route; the 17
 tools (`tools.py`) return JSON strings — decisions with reason codes, held
-intent ids, or `{"error", "status"}` objects. Install with
-`pip install langchain-core` (or `pip install -e langchain_rvn/` once
-packaged). Verify with `pnpm test:langchain`, which boots the API on the
-mock node and exercises the client and every tool.
+intent ids, or `{"error", "status"}` objects. Install from a checkout with
+`pip install ./langchain_rvn` (the package builds a valid wheel and sdist;
+it is not on PyPI yet). A worked agent-executor example lives at
+`langchain_rvn/examples/agent_executor.py` — it runs a deterministic
+tool-calling loop (simulate → issue → audit) against a local mock-node
+API with no LLM key. Verify with `pnpm test:langchain`, which boots the
+API on the mock node and exercises the client and every tool.
 
 ## Telegram approval notifications
 

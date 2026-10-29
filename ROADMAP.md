@@ -123,7 +123,7 @@ and logs the result in CHANGELOG.md.
   reissue, subasset, unique, presets, mcp-smoke still green. Follow-ups:
   anomaly thresholds (multiplier, burst window/count) as policy fields
   instead of constants; an anomaly-stats endpoint.
-- [ ] **LangChain tool adapter** — wrap the REST API as LangChain tools for Python agents.
+- [x] **LangChain tool adapter** — wrap the REST API as LangChain tools for Python agents.
   - [x] 2026-10-28 — v0.13.0 LangChain adapter (slice 1, item partial):
     new `langchain_rvn/` Python package. `client.py` is a stdlib-only
     REST client covering every route (issue / reissue / sub-asset /
@@ -142,8 +142,27 @@ and logs the result in CHANGELOG.md.
     approve → executed, hold → deny, 409 re-approve, 404 unknown intent,
     simulate zero-side-effect proof, audit chain valid) plus
     `pnpm build`, `pnpm demo`, `pnpm mcp-smoke` and every `test:*`
-    suite still green. Remainder: a worked agent-executor example
-    against a real LLM, and PyPI packaging.
+    suite still green.
+  - [x] 2026-10-29 — v0.14.0 agent-executor example + PyPI packaging
+    (slice 2, item complete): `langchain_rvn/examples/agent_executor.py`
+    runs a complete tool-calling loop (allowlist the destination, then
+    simulate → issue → audit) against a local mock-node API, using
+    langchain-core's deterministic `GenericFakeChatModel` in place of a
+    real chat model — no LLM key, no network beyond localhost, no real
+    funds — with a hold path that reports the intent id and stops
+    instead of auto-approving; swapping in a real model bound to the
+    tools turns the same loop into a live agent. Packaging fixed for
+    real: the v0.13.0 pyproject could not build at all (`package
+    directory 'langchain_rvn' does not exist`, because the pyproject
+    sits alongside the package files, not above them) — it now maps
+    the package onto the current directory, carries a package README,
+    license, classifiers and project URLs, and builds a clean wheel
+    (only `__init__`/`client`/`tools`) verified by installing it in a
+    fresh venv (17 tools build). The adapter test moved out of the
+    shipped package to `tests/test_adapter.py` (`pnpm test:langchain`
+    updated) so it no longer rides in the wheel. Follow-up: the actual
+    `twine upload` to PyPI, which needs Paul's PyPI account/token —
+    not performed here.
 - [ ] **Webhooks** — POST decision/execution events to a configured URL.
 - [ ] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension.
 

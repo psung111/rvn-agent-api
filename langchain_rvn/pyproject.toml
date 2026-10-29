@@ -4,10 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "langchain-rvn"
-version = "0.13.0"
+version = "0.14.0"
 description = "LangChain tools wrapping the rvn-agent-api policy-gated Ravencoin API"
+readme = "README.md"
+license = { text = "AGPL-3.0-only" }
+authors = [{ name = "Paul Sung" }]
 requires-python = ">=3.10"
 dependencies = ["langchain-core>=0.3"]
+keywords = ["ravencoin", "langchain", "agents", "policy"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Operating System :: OS Independent",
+]
 
+[project.urls]
+Homepage = "https://github.com/psung111/-rvn-agent-api"
+Source = "https://github.com/psung111/-rvn-agent-api"
+
+# The package lives directly in this directory (this pyproject sits
+# alongside __init__.py, not in a parent directory), so map the package
+# name onto the current directory. Without this, setuptools looks for a
+# langchain_rvn/ subdirectory that does not exist and the build fails.
 [tool.setuptools]
+package-dir = { "langchain_rvn" = "." }
 packages = ["langchain_rvn"]
