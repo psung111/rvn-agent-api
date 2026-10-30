@@ -14,6 +14,7 @@ import {
 } from './policy/index.js';
 import { storeFromEnv, type Store } from './store/index.js';
 import { notifierFromEnv, telegramConfigFromEnv } from './approvals/notifier.js';
+import { webhookDispatcherFromEnv, type WebhookEvent } from './webhooks/dispatcher.js';
 import { parseCallbackData, formatResolvedMessage, type CallbackAction } from './approvals/callbacks.js';
 import { TelegramApi } from './approvals/telegram-api.js';
 import { MockRvnNode } from './rvn/mock.js';
@@ -27,6 +28,7 @@ const PORT = Number(process.env.PORT ?? 3001);
 // and reachable, in-memory otherwise (see src/store/index.ts).
 let store: Store;
 const approvalNotifier = notifierFromEnv();
+const webhookDispatcher = webhookDispatcherFromEnv();
 const telegramConfig = telegramConfigFromEnv();
 const telegramApi = telegramConfig ? new TelegramApi(telegramConfig.botToken) : null;
 // Optional shared secret proving the update came from Telegram. Set it with
@@ -82,6 +84,29 @@ async function main() {
 
   const policyFor = async (agentId: string): Promise<RvnPolicy> =>
     (await store.policies.get(agentId)) ?? (await store.policies.get('*')) ?? defaultPolicy();
+
+  /**
+   * Deliver a webhook event for an intent. No-op when no webhook URL is
+   * configured; a delivery failure is audited (never thrown into the
+   * request that produced the event), mirroring approval notifications.
+   */
+  const deliverWebhook = async (
+    event: WebhookEvent,
+    intent: RvnIntent,
+    extra: { decision?: Decision; txid?: string; error?: string } = {},
+  ): Promise<void> => {
+    if (!webhookDispatcher.enabled) return;
+    try {
+      await webhookDispatcher.deliver(event, intent, extra);
+      await store.audit.append('WEBHOOK_DELIVERY', intent.id, intent.agentId, { event });
+    } catch (err) {
+      app.log.error({ intentId: intent.id, event }, `webhook delivery failed: ${(err as Error).message}`);
+      await store.audit.append('WEBHOOK_DELIVERY_FAILED', intent.id, intent.agentId, {
+        event,
+        error: (err as Error).message,
+      });
+    }
+  };
 
   /**
    * Execute an intent against the node — shared by the immediate-execution
@@ -165,6 +190,9 @@ async function main() {
         kind: 'DENY',
         reasonCodes: ['DENIED_BY_OWNER', ...decision.reasonCodes],
       });
+      await deliverWebhook('intent.denied', intent, {
+        decision: { ...decision, kind: 'DENY', reasonCodes: ['DENIED_BY_OWNER', ...decision.reasonCodes] },
+      });
       return { status: 200, body: { intent, denied: true, approver } };
     }
     await store.audit.append('APPROVAL', intent.id, intent.agentId, { approver });
@@ -183,6 +211,7 @@ async function main() {
         kind: 'DENY', reasonCodes: fresh.reasonCodes, atApproval: true,
       });
       await store.intents.putDecision(id, fresh);
+      await deliverWebhook('intent.denied', intent, { decision: fresh });
       return { status: 403, body: { error: 'denied on re-evaluation', decision: fresh } };
     }
     try {
@@ -193,10 +222,12 @@ async function main() {
       await store.audit.append(MOCK ? 'EXECUTION_SKIPPED' : 'EXECUTION', intent.id, intent.agentId, { txid });
       // Mark the decision resolved so a second approve returns 409 instead of re-executing.
       await store.intents.putDecision(id, { ...fresh, kind: 'ALLOW', reasonCodes: ['APPROVED', ...fresh.reasonCodes] });
+      await deliverWebhook('intent.executed', intent, { txid });
       return { status: 200, body: { intent, txid, mock: MOCK, approver } };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await store.audit.append('EXECUTION_FAILED', intent.id, intent.agentId, { error: message });
+      await deliverWebhook('intent.execution_failed', intent, { error: message });
       return { status: 502, body: { error: `node execution failed: ${message}` } };
     }
   };
@@ -218,6 +249,7 @@ async function main() {
       op: intent.kind,
       reasonCodes: decision.reasonCodes,
     });
+    await deliverWebhook('intent.decided', intent, { decision });
 
     if (decision.kind === 'ALLOW') {
       try {
@@ -226,10 +258,12 @@ async function main() {
           await store.ledger.recordIssue(intent.agentId, BigInt(intent.qtyBaseUnits), Date.now());
         }
         await store.audit.append(MOCK ? 'EXECUTION_SKIPPED' : 'EXECUTION', intent.id, intent.agentId, { txid });
+        await deliverWebhook('intent.executed', intent, { txid });
         return { intent, decision, txid, mock: MOCK };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await store.audit.append('EXECUTION_FAILED', intent.id, intent.agentId, { error: message });
+        await deliverWebhook('intent.execution_failed', intent, { error: message });
         return reply.code(502).send({ intent, decision, error: `node execution failed: ${message}` });
       }
     }
@@ -266,6 +300,9 @@ async function main() {
       telegramConfigured: approvalNotifier.name === 'telegram',
       telegramWebhookSecretConfigured: WEBHOOK_SECRET !== undefined,
       perAgentChatRoutes: telegramConfig ? Object.keys(telegramConfig.chatIdsByAgent).length : 0,
+    },
+    webhooks: {
+      configured: webhookDispatcher.enabled,
     },
     ...(await node.getInfo()),
   }));

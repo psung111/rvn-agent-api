@@ -1,5 +1,59 @@
 # Changelog
 
+## 2026-10-30 — v0.15.0 (Webhooks, slice 1 — item partial)
+
+- New `src/webhooks/dispatcher.ts`: a `WebhookDispatcher` that POSTs
+  decision/execution events to a single configured URL. Four event
+  types: `intent.decided` (fired on every submit decision — ALLOW,
+  REQUIRE_APPROVAL, or DENY), `intent.executed` (immediate executions
+  and approval-path executions, carrying the txid), `intent.denied`
+  (HTTP/Telegram denies and approval-time re-evaluation DENYs, with the
+  final decision including `DENIED_BY_OWNER`), and
+  `intent.execution_failed` (node failures, carrying the error message).
+  Payloads (`version: 1`, `atMs`, intent id/agent, kind/asset/qty/
+  destination, decision kind + reason codes, txid/error) contain only
+  public intent facts — no secrets and no policy internals.
+- Config via `RVN_WEBHOOK_URL` and optional `RVN_WEBHOOK_SECRET`: an
+  unset URL disables webhooks entirely (the API behaves exactly as
+  before), and a malformed or non-http(s) URL degrades to disabled
+  rather than crashing startup. With a secret set, every delivery
+  carries `X-Rvn-Signature: sha256=<hex>` (HMAC-SHA256 over the raw
+  JSON body) and `X-Rvn-Event`; the secret never appears in logs,
+  audit entries, or payloads. Delivery retries once after a brief
+  backoff, then the failure is audited as `WEBHOOK_DELIVERY_FAILED`
+  (successes as `WEBHOOK_DELIVERY`, both new `AuditKind`s) and never
+  fails the request that produced the event — the same stance as
+  approval-notification failures. `/v1/health` reports
+  `webhooks.configured`.
+- New `pnpm test:webhooks` (`demo/webhook-test.ts`, 42 checks):
+  config parsing (missing/malformed/non-http URLs disable cleanly),
+  payload shape and secret hygiene, signature determinism and
+  verification against node crypto, dispatcher retry-then-success,
+  give-up-after-two-attempts, and disabled no-op behavior (all with
+  injected senders), plus an integration run of the real API behind a
+  stub receiver covering ALLOW (decided → executed, txid, valid
+  signature), DENY (decided only), hold → approve (executed on
+  approval, nothing before), hold → deny (`intent.denied` with
+  `DENIED_BY_OWNER`), duplicate-asset execution failure (decided →
+  execution_failed, 502), and a down receiver (request still 200,
+  retries observed, `WEBHOOK_DELIVERY_FAILED` audited, chain valid) —
+  all green. `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:langchain` still green. No new REST route or MCP tool:
+  webhooks are outbound server configuration, not a callable route, so
+  the MCP/LangChain surfaces are unchanged. `initialize` now reports
+  server version 0.15.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`).
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`, `node_modules/.bin/tsx`,
+  plus a fresh venv Python with langchain-core for the adapter test);
+  `package.json` scripts are unchanged in content apart from the new
+  `test:webhooks` script.
+- Remainder of the webhooks item: multiple endpoints, per-event
+  subscriptions/filtering, and configurable retry/backoff.
+
 ## 2026-10-29 — v0.14.0 (LangChain tool adapter, slice 2 — item complete)
 
 - New `langchain_rvn/examples/agent_executor.py`: a worked agent-executor

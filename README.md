@@ -134,6 +134,20 @@ Approve/Deny buttons: taps arrive as callback queries on
 `POST /v1/telegram/webhook` and resolve the intent the same way the HTTP
 routes do.
 
+## Webhooks
+
+Set `RVN_WEBHOOK_URL` and the API POSTs decision/execution events to it
+as JSON: `intent.decided` (every ALLOW / REQUIRE_APPROVAL / DENY),
+`intent.executed` (with txid), `intent.denied`, and
+`intent.execution_failed` (with the error). Set `RVN_WEBHOOK_SECRET` as
+well and every delivery carries `X-Rvn-Signature: sha256=<hex>`
+(HMAC-SHA256 over the raw body) plus `X-Rvn-Event`, so a receiver can
+prove the event came from this API. Delivery failures are audited as
+`WEBHOOK_DELIVERY_FAILED` and never fail the request that produced the
+event; unset the URL and webhooks stay disabled. `/v1/health` reports
+`webhooks.configured`. Verify with `pnpm test:webhooks`, which drives
+the real API against a stub receiver.
+
 ## Going live (testnet)
 
 1. Run `ravend` with `-server=1 -testnet=1`, let it sync.

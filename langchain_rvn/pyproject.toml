@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "langchain-rvn"
-version = "0.14.0"
+version = "0.15.0"
 description = "LangChain tools wrapping the rvn-agent-api policy-gated Ravencoin API"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }

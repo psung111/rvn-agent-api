@@ -164,6 +164,33 @@ and logs the result in CHANGELOG.md.
     `twine upload` to PyPI, which needs Paul's PyPI account/token —
     not performed here.
 - [ ] **Webhooks** — POST decision/execution events to a configured URL.
+  - [x] 2026-10-30 — v0.15.0 webhooks (slice 1, item partial): new
+    `src/webhooks/dispatcher.ts` — `WebhookDispatcher` POSTs four event
+    types to a single configured URL: `intent.decided` (every submit
+    decision: ALLOW / REQUIRE_APPROVAL / DENY), `intent.executed`
+    (immediate and approval-path executions, with txid), `intent.denied`
+    (HTTP/Telegram denies and approval-time re-evaluation DENYs), and
+    `intent.execution_failed` (node failures, with the error). Payloads
+    carry only public intent facts (kind, asset, qty, destination,
+    decision kind/reason codes, txid/error) — no secrets, no policy
+    internals. Config via `RVN_WEBHOOK_URL` (unset or non-http(s) =
+    disabled, never a startup crash) and optional `RVN_WEBHOOK_SECRET`
+    for HMAC-SHA256 signing (`X-Rvn-Signature: sha256=<hex>` over the
+    raw body, plus an `X-Rvn-Event` header). Delivery mirrors the
+    approval notifier: one retry, then the failure is audited as
+    `WEBHOOK_DELIVERY_FAILED` (successes as `WEBHOOK_DELIVERY`) and
+    never fails the request that produced the event. `/v1/health`
+    reports `webhooks.configured`. Verified with new
+    `pnpm test:webhooks` (`demo/webhook-test.ts`, 42 checks: config
+    parsing, payload shape, signature determinism/verification,
+    dispatcher retry/give-up/disabled behavior with injected senders,
+    plus integration against a stub receiver — event order and txids
+    for ALLOW/DENY/hold→approve/deny/execution-failure flows, valid
+    signatures, and a down receiver still returning 200 with audited
+    failures); demo, mcp-smoke, approvals, telegram-callback, simulate,
+    reissue, subasset, unique, presets, anomaly, store, langchain
+    suites still green. Remainder: multiple endpoints, per-event
+    subscriptions/filtering, and configurable retry/backoff.
 - [ ] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension.
 
 ## Done
