@@ -97,8 +97,10 @@ async function main() {
   ): Promise<void> => {
     if (!webhookDispatcher.enabled) return;
     try {
-      await webhookDispatcher.deliver(event, intent, extra);
-      await store.audit.append('WEBHOOK_DELIVERY', intent.id, intent.agentId, { event });
+      const delivered = await webhookDispatcher.deliver(event, intent, extra);
+      if (delivered > 0) {
+        await store.audit.append('WEBHOOK_DELIVERY', intent.id, intent.agentId, { event });
+      }
     } catch (err) {
       app.log.error({ intentId: intent.id, event }, `webhook delivery failed: ${(err as Error).message}`);
       await store.audit.append('WEBHOOK_DELIVERY_FAILED', intent.id, intent.agentId, {
@@ -303,6 +305,7 @@ async function main() {
     },
     webhooks: {
       configured: webhookDispatcher.enabled,
+      endpoints: webhookDispatcher.endpointCount,
     },
     ...(await node.getInfo()),
   }));

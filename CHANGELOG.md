@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-10-31 — v0.16.0 (Webhooks, slice 2 — item partial)
+
+- Multiple webhook endpoints with per-event subscriptions. New
+  `RVN_WEBHOOKS_JSON` env var: a JSON array of `{ url, secret?,
+  events? }` endpoints, where `events` is a subset of the four event
+  types (`intent.decided`, `intent.executed`, `intent.denied`,
+  `intent.execution_failed`) and an omitted `events` means all events.
+  The legacy `RVN_WEBHOOK_URL` / `RVN_WEBHOOK_SECRET` endpoint still
+  works and is appended to the list. Malformed JSON, malformed
+  entries, non-http(s) URLs, unknown event names, and entries whose
+  events filter to nothing are skipped — degraded gracefully, never a
+  startup crash.
+- `WebhookDispatcher` now takes a list of endpoint configs
+  (`webhookConfigsFromEnv()`; the single-config constructor form still
+  works). `deliver()` fans an event out to every subscribed endpoint,
+  each signed with its own secret when set, retries each once, never
+  lets one failing endpoint block the others, and throws listing the
+  failed endpoint URLs (never secrets) when any fail — the server
+  audits that as `WEBHOOK_DELIVERY_FAILED` as before. `deliver()`
+  returns the attempted-endpoint count, and the server audits
+  `WEBHOOK_DELIVERY` only when at least one endpoint was attempted, so
+  an event no endpoint subscribes to is not recorded as delivered.
+  `/v1/health` reports `webhooks.endpoints` alongside `configured`.
+- `pnpm test:webhooks` extended to 60 checks: multi-endpoint config
+  parsing (bad JSON, bad entries, unknown event names, empty events,
+  legacy merge), per-endpoint routing and signing with injected
+  senders, partial failure (one endpoint down, the other still
+  delivered, error names only the failed URL), zero-subscriber
+  no-op, plus a second-API integration proving an all-events endpoint
+  receives decided+executed while an executed-only endpoint receives
+  just the executed event — all green. `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`,
+  `pnpm test:simulate`, `pnpm test:reissue`, `pnpm test:subasset`,
+  `pnpm test:unique`, `pnpm test:presets`, `pnpm test:anomaly`,
+  `pnpm test:store`, `pnpm test:langchain` still green. No new REST
+  route or MCP tool: webhooks are outbound server configuration.
+  `initialize` now reports server version 0.16.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`).
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`, `node_modules/.bin/tsx`,
+  plus a fresh venv Python with langchain-core for the adapter test);
+  `package.json` scripts are unchanged in content.
+- Remainder of the webhooks item: configurable retry/backoff.
+
 ## 2026-10-30 — v0.15.0 (Webhooks, slice 1 — item partial)
 
 - New `src/webhooks/dispatcher.ts`: a `WebhookDispatcher` that POSTs

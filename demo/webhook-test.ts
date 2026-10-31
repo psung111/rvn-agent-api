@@ -1,15 +1,17 @@
 /**
- * webhook-test: checks for slice 1 of the Webhooks item.
+ * webhook-test: checks for slices 1–2 of the Webhooks item.
  *
  *  pnpm test:webhooks
  *
- * Unit: env config parsing, payload shape, HMAC signature, dispatcher
- * retry / give-up / disabled behavior (all with injected senders, no
- * network). Integration: boots the real API as a child process with
- * RVN_WEBHOOK_URL pointing at a local stub, then drives issue / hold /
+ * Unit: env config parsing (single + multi-endpoint), payload shape, HMAC
+ * signature, dispatcher retry / give-up / disabled behavior and
+ * multi-endpoint routing with per-event subscriptions (all with injected
+ * senders, no network). Integration: boots the real API as a child process
+ * with RVN_WEBHOOK_URL pointing at a local stub, then drives issue / hold /
  * approve / deny / execution-failure flows and asserts the stub received
  * the right events, in order, with a verifiable signature — and that a
- * failing receiver never fails the API request itself.
+ * failing receiver never fails the API request itself — plus a second API
+ * booted with RVN_WEBHOOKS_JSON proving per-endpoint event filtering.
  * Nothing touches the network beyond localhost.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -20,6 +22,7 @@ import {
   buildWebhookPayload,
   signPayload,
   webhookConfigFromEnv,
+  webhookConfigsFromEnv,
   WebhookDispatcher,
 } from '../src/webhooks/dispatcher.js';
 import type { RvnIntent } from '../src/policy/types.js';
@@ -53,6 +56,7 @@ const intent: RvnIntent = {
 
 // ---- local stub webhook receiver ----
 interface StubCall {
+  path: string;
   headers: Record<string, string | string[] | undefined>;
   raw: string;
   body: any;
@@ -72,7 +76,7 @@ async function startStub(): Promise<void> {
       } catch {
         body = { parseError: raw.slice(0, 100) };
       }
-      stubCalls.push({ headers: req.headers, raw, body });
+      stubCalls.push({ path: req.url ?? '', headers: req.headers, raw, body });
       if (stubFail) {
         res.writeHead(500, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'receiver down' }));
@@ -86,15 +90,19 @@ async function startStub(): Promise<void> {
 }
 
 // ---- helpers for driving the API ----
-async function startApi(): Promise<ChildProcess> {
+async function startApi(
+  apiPort: number = API_PORT,
+  extraEnv: Record<string, string> = {},
+): Promise<ChildProcess> {
   const child = spawn(tsx, [join(repo, 'src', 'server.ts')], {
     cwd: repo,
     env: {
       ...process.env,
-      PORT: String(API_PORT),
+      PORT: String(apiPort),
       MOCK_RVN: 'true',
       RVN_WEBHOOK_URL: `http://127.0.0.1:${STUB_PORT}/hook`,
       RVN_WEBHOOK_SECRET: SECRET,
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -102,7 +110,7 @@ async function startApi(): Promise<ChildProcess> {
   child.stderr?.on('data', () => {});
   for (let i = 0; i < 120; i++) {
     try {
-      const r = await fetch(`${API}/v1/health`);
+      const r = await fetch(`http://127.0.0.1:${apiPort}/v1/health`);
       if (r.ok) return child;
     } catch {
       // not up yet
@@ -159,6 +167,35 @@ async function main() {
     'secret optional when URL present',
     webhookConfigFromEnv({ RVN_WEBHOOK_URL: 'http://127.0.0.1:9/hook' })?.secret === undefined,
   );
+
+  // ===== unit: multi-endpoint config parsing =====
+  const multi = webhookConfigsFromEnv({
+    RVN_WEBHOOKS_JSON: JSON.stringify([
+      { url: 'http://127.0.0.1:9/all' },
+      { url: 'https://example.com/exec-only', secret: 's2', events: ['intent.executed'] },
+      { url: 'ftp://example.com/bad' },
+      { url: 'not a url' },
+      { url: 'http://127.0.0.1:9/no-events', events: [] },
+      { url: 'http://127.0.0.1:9/mixed-events', events: ['intent.denied', 'bogus-event'] },
+      { notAUrl: true },
+    ]),
+    RVN_WEBHOOK_URL: 'http://127.0.0.1:9/legacy',
+    RVN_WEBHOOK_SECRET: 'legacy-secret',
+  });
+  check('multi-endpoint parse keeps only valid entries (3 + legacy)',
+    multi.length === 4 &&
+      multi[0].url === 'http://127.0.0.1:9/all' && multi[0].events === undefined &&
+      multi[1].secret === 's2' && multi[1].events?.length === 1 && multi[1].events[0] === 'intent.executed' &&
+      multi[2].events?.length === 1 && multi[2].events[0] === 'intent.denied' &&
+      multi[3].url === 'http://127.0.0.1:9/legacy' && multi[3].secret === 'legacy-secret',
+    multi);
+  check('malformed JSON list degrades to legacy only',
+    webhookConfigsFromEnv({ RVN_WEBHOOKS_JSON: '{oops', RVN_WEBHOOK_URL: 'http://127.0.0.1:9/legacy' }).length === 1);
+  check('non-array JSON list yields no list endpoints',
+    webhookConfigsFromEnv({ RVN_WEBHOOKS_JSON: '{"url":"http://127.0.0.1:9/x"}' }).length === 0);
+  check('empty env yields no endpoints', webhookConfigsFromEnv({}).length === 0);
+  check('non-array events entry is skipped',
+    webhookConfigsFromEnv({ RVN_WEBHOOKS_JSON: '[{"url":"http://127.0.0.1:9/x","events":"intent.decided"}]' }).length === 0);
 
   // ===== unit: payload + signature =====
   const payload = buildWebhookPayload('intent.decided', intent, {
@@ -227,12 +264,73 @@ async function main() {
   await disabled.deliver('intent.decided', intent);
   check('disabled dispatcher sends nothing', disabledCalls === 0);
 
+  // ===== unit: multi-endpoint dispatcher =====
+  const multiSent: Array<{ url: string; event: string; body: string; headers: Record<string, string> }> = [];
+  const multiDispatcher = new WebhookDispatcher(
+    [
+      { url: 'http://127.0.0.1:9/all', secret: 'all-secret' },
+      { url: 'http://127.0.0.1:9/exec-only', events: ['intent.executed'] },
+    ],
+    async (url, body, headers) => {
+      multiSent.push({ url, event: headers['x-rvn-event'], body, headers });
+      return { ok: true, status: 200 };
+    },
+  );
+  check('multi dispatcher reports endpoint count', multiDispatcher.endpointCount === 2);
+  const decidedCount = await multiDispatcher.deliver('intent.decided', intent);
+  check('decided goes only to subscribed endpoints (1 of 2)',
+    decidedCount === 1 && multiSent.length === 1 && multiSent[0].url === 'http://127.0.0.1:9/all',
+    multiSent);
+  check('per-endpoint secret signs its own deliveries',
+    multiSent[0].headers['x-rvn-signature'] ===
+      `sha256=${createHmac('sha256', 'all-secret').update(multiSent[0].body).digest('hex')}`);
+  multiSent.length = 0;
+  const executedCount = await multiDispatcher.deliver('intent.executed', intent, { txid: 'tx-9' });
+  check('executed goes to both endpoints',
+    executedCount === 2 && multiSent.length === 2 &&
+      multiSent.some((s) => s.url === 'http://127.0.0.1:9/all') &&
+      multiSent.some((s) => s.url === 'http://127.0.0.1:9/exec-only'),
+    multiSent);
+  check('unsubscribed endpoint sends no signature header',
+    multiSent.find((s) => s.url === 'http://127.0.0.1:9/exec-only')?.headers['x-rvn-signature'] === undefined);
+
+  const partialSent: string[] = [];
+  const partial = new WebhookDispatcher(
+    [
+      { url: 'http://127.0.0.1:9/down' },
+      { url: 'http://127.0.0.1:9/up' },
+    ],
+    async (url) => {
+      if (url.endsWith('/up')) partialSent.push(url);
+      return url.endsWith('/up') ? { ok: true, status: 200 } : { ok: false, status: 500 };
+    },
+  );
+  let partialThrew = false;
+  let partialError = '';
+  try {
+    await partial.deliver('intent.denied', intent);
+  } catch (e) {
+    partialThrew = true;
+    partialError = (e as Error).message;
+  }
+  check('one failing endpoint does not block the other, and the error names it',
+    partialThrew && partialSent.length === 1 && partialError.includes('http://127.0.0.1:9/down') &&
+      !partialError.includes('secret'),
+    partialError);
+
+  const unsub = new WebhookDispatcher(
+    [{ url: 'http://127.0.0.1:9/exec-only', events: ['intent.executed'] }],
+    async () => { throw new Error('should not be called'); },
+  );
+  check('event with no subscribers attempts nothing and returns 0',
+    (await unsub.deliver('intent.decided', intent)) === 0);
+
   // ===== integration: the real API behind a stub receiver =====
   await startStub();
   const api = await startApi();
   try {
     const health = await get('/v1/health');
-    check('health reports webhooks configured', health.webhooks?.configured === true);
+    check('health reports webhooks configured', health.webhooks?.configured === true && health.webhooks?.endpoints === 1, health.webhooks);
 
     const { address } = (await post('/v1/wallets', {})).json;
     const policy = await get('/v1/policies/agent-1');
@@ -335,6 +433,60 @@ async function main() {
       audit.entries?.some((e: any) => e.kind === 'WEBHOOK_DELIVERY' && e.intentId === issue.json.intent?.id),
     );
     stubFail = false;
+
+    // 7. Multi-endpoint integration: one endpoint gets everything, one
+    //    only executed events — via RVN_WEBHOOKS_JSON, no legacy URL.
+    const API2_PORT = 3127;
+    const API2 = `http://127.0.0.1:${API2_PORT}`;
+    const api2 = await startApi(API2_PORT, {
+      RVN_WEBHOOK_URL: '',
+      RVN_WEBHOOK_SECRET: '',
+      RVN_WEBHOOKS_JSON: JSON.stringify([
+        { url: `http://127.0.0.1:${STUB_PORT}/hook-all`, secret: SECRET },
+        { url: `http://127.0.0.1:${STUB_PORT}/hook-exec-only`, events: ['intent.executed'] },
+      ]),
+    });
+    try {
+      const health2 = await (await fetch(`${API2}/v1/health`)).json() as any;
+      check('health reports two webhook endpoints', health2.webhooks?.configured === true && health2.webhooks?.endpoints === 2, health2.webhooks);
+      const post2 = async (path: string, body: unknown) => {
+        const res = await fetch(`${API2}${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        return { status: res.status, json: await res.json() as any };
+      };
+      const { address: address2 } = (await post2('/v1/wallets', {})).json;
+      const policy2 = await (await fetch(`${API2}/v1/policies/agent-1`)).json() as any;
+      const put2 = await fetch(`${API2}/v1/policies/agent-1`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...policy2, agentId: 'agent-1', allowedDestinations: [address2] }),
+      });
+      check('second API allowlists the agent wallet', put2.status === 200);
+      const mark = stubCalls.length;
+      const issue2 = await post2('/v1/assets/issue', {
+        agentId: 'agent-1', name: 'MULTI', qty: '100', toAddress: address2,
+      });
+      check('multi-endpoint issue ALLOWs', issue2.status === 200 && issue2.json.decision?.kind === 'ALLOW', issue2.json);
+      const newCalls = stubCalls.slice(mark);
+      const allCalls = newCalls.filter((c) => c.path === '/hook-all');
+      const execCalls = newCalls.filter((c) => c.path === '/hook-exec-only');
+      check('all-events endpoint receives decided + executed',
+        allCalls.length === 2 &&
+          allCalls[0].headers['x-rvn-event'] === 'intent.decided' &&
+          allCalls[1].headers['x-rvn-event'] === 'intent.executed',
+        newCalls.map((c) => `${c.path}:${c.headers['x-rvn-event']}`));
+      check('executed-only endpoint receives just the executed event',
+        execCalls.length === 1 && execCalls[0].headers['x-rvn-event'] === 'intent.executed' &&
+          execCalls[0].body?.txid === issue2.json.txid,
+        execCalls.map((c) => `${c.path}:${c.headers['x-rvn-event']}`));
+      check('multi-endpoint deliveries carry a valid signature',
+        allCalls.every(signatureValid));
+    } finally {
+      api2.kill();
+    }
   } finally {
     api.kill();
     await new Promise<void>((resolve) => stub.close(() => resolve()));

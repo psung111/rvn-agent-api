@@ -1,20 +1,24 @@
 /**
- * Outbound webhooks: POST decision/execution events to a configured URL so
- * an operator's own service (a dashboard, a SIEM, a Discord relay) can react
- * to what the policy engine does without polling /v1/audit.
+ * Outbound webhooks: POST decision/execution events to configured URLs so
+ * an operator's own services (a dashboard, a SIEM, a Discord relay) can
+ * react to what the policy engine does without polling /v1/audit.
  *
- * Slice 1 is deliberately small: one URL, four event types, HMAC signing.
- * Config comes from the environment:
+ * Slice 1: one URL, four event types, HMAC signing.
+ * Slice 2: multiple endpoints with per-event subscriptions. Config comes
+ * from the environment:
  *
- *   RVN_WEBHOOK_URL    — the POST target; unset (or not http/https) means
- *                        webhooks are disabled and the API behaves exactly
- *                        as before.
- *   RVN_WEBHOOK_SECRET — optional shared secret. When set, every delivery
- *                        carries an `X-Rvn-Signature: sha256=<hex>` header
- *                        (HMAC-SHA256 over the raw JSON body) so the
- *                        receiver can prove the event came from this API.
- *                        The secret never appears in logs, audit entries,
- *                        or payloads.
+ *   RVN_WEBHOOK_URL    — the legacy single POST target; unset (or not
+ *                        http/https) means no legacy endpoint. Still
+ *                        supported alongside RVN_WEBHOOKS_JSON.
+ *   RVN_WEBHOOK_SECRET — optional shared secret for the legacy endpoint.
+ *   RVN_WEBHOOKS_JSON  — JSON array of endpoints, each
+ *                        { url, secret?, events? } where `events` is a
+ *                        subset of the four event types; an omitted
+ *                        `events` means "all events". Malformed JSON,
+ *                        malformed entries, non-http(s) URLs, and entries
+ *                        whose events filter down to nothing are skipped
+ *                        (degraded gracefully, never a startup crash) —
+ *                        the same stance as the Telegram config parser.
  *
  * Delivery failures never fail the request that produced the event — the
  * dispatcher throws after its retries and the server audits that as
@@ -85,23 +89,82 @@ export function signPayload(secret: string, body: string): string {
 export interface WebhookConfig {
   url: string;
   secret?: string;
+  /** Subscribed event types; undefined (or absent) means all events. */
+  events?: WebhookEvent[];
+}
+
+const ALL_EVENTS: WebhookEvent[] = [
+  'intent.decided',
+  'intent.executed',
+  'intent.denied',
+  'intent.execution_failed',
+];
+
+function isWebhookEvent(value: unknown): value is WebhookEvent {
+  return typeof value === 'string' && (ALL_EVENTS as string[]).includes(value);
+}
+
+function isHttpUrl(url: unknown): url is string {
+  if (typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/** Parse one endpoint entry; returns null for anything unusable. */
+function parseEndpointEntry(entry: unknown): WebhookConfig | null {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const { url, secret, events } = entry as Record<string, unknown>;
+  if (!isHttpUrl(url)) return null;
+  const config: WebhookConfig = { url };
+  if (typeof secret === 'string' && secret) config.secret = secret;
+  if (events !== undefined) {
+    if (!Array.isArray(events)) return null;
+    const filtered = events.filter(isWebhookEvent);
+    if (filtered.length === 0) return null;
+    config.events = filtered;
+  }
+  return config;
 }
 
 /**
- * Parse webhook config from the environment. A missing URL disables
- * webhooks; a malformed or non-http(s) URL also disables them (loudly, via
- * the caller's log) rather than crashing startup — same degraded-gracefully
- * stance as the Telegram config parser.
+ * Parse all webhook endpoints from the environment: the RVN_WEBHOOKS_JSON
+ * list first, then the legacy single RVN_WEBHOOK_URL endpoint. Returns []
+ * when nothing usable is configured. Never throws.
+ */
+export function webhookConfigsFromEnv(env: NodeJS.ProcessEnv = process.env): WebhookConfig[] {
+  const configs: WebhookConfig[] = [];
+  const raw = env.RVN_WEBHOOKS_JSON;
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          const config = parseEndpointEntry(entry);
+          if (config) configs.push(config);
+        }
+      }
+    } catch {
+      // Malformed JSON degrades to "no list endpoints", same as slice 1.
+    }
+  }
+  const legacy = webhookConfigFromEnv(env);
+  if (legacy) configs.push(legacy);
+  return configs;
+}
+
+/**
+ * Parse the legacy single-endpoint webhook config from the environment.
+ * A missing URL disables it; a malformed or non-http(s) URL also disables
+ * it (loudly, via the caller's log) rather than crashing startup — same
+ * degraded-gracefully stance as the Telegram config parser.
  */
 export function webhookConfigFromEnv(env: NodeJS.ProcessEnv = process.env): WebhookConfig | null {
   const url = env.RVN_WEBHOOK_URL;
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-  } catch {
-    return null;
-  }
+  if (!isHttpUrl(url)) return null;
   const secret = env.RVN_WEBHOOK_SECRET;
   return { url, ...(secret ? { secret } : {}) };
 }
@@ -125,43 +188,71 @@ export const defaultSender: WebhookSender = async (url, body, headers) => {
 export class WebhookDispatcher {
   readonly name = 'webhook';
   readonly enabled: boolean;
-  private readonly config: WebhookConfig | null;
+  private readonly configs: WebhookConfig[];
 
   constructor(
-    config: WebhookConfig | null,
+    config: WebhookConfig | WebhookConfig[] | null,
     private readonly sender: WebhookSender = defaultSender,
   ) {
-    this.config = config;
-    this.enabled = config !== null;
+    this.configs = config === null ? [] : Array.isArray(config) ? config : [config];
+    this.enabled = this.configs.length > 0;
   }
 
-  /** Deliver one event. No-op when unconfigured; throws after retries on failure. */
+  /** Number of configured endpoints (0 when disabled). */
+  get endpointCount(): number {
+    return this.configs.length;
+  }
+
+  /** Endpoints subscribed to this event (all events when `events` is absent). */
+  endpointsFor(event: WebhookEvent): WebhookConfig[] {
+    return this.configs.filter((c) => !c.events || c.events.includes(event));
+  }
+
+  /**
+   * Deliver one event to every subscribed endpoint. Returns the number of
+   * endpoints attempted (0 when no endpoint subscribes to the event).
+   * A failure at one endpoint never blocks the others; after all attempts,
+   * throws listing the failed endpoints (URLs only, never secrets) so the
+   * caller can audit the failure. No-op when unconfigured.
+   */
   async deliver(
     event: WebhookEvent,
     intent: RvnIntent,
     extra: { decision?: Decision; txid?: string; error?: string } = {},
-  ): Promise<void> {
-    if (!this.config) return;
+  ): Promise<number> {
+    const targets = this.endpointsFor(event);
+    if (targets.length === 0) return 0;
     const body = JSON.stringify(buildWebhookPayload(event, intent, extra));
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      'x-rvn-event': event,
-      ...(this.config.secret ? { 'x-rvn-signature': signPayload(this.config.secret, body) } : {}),
-    };
-    // One retry after a brief backoff; two attempts total, then throw —
-    // the caller audits the failure and never fails the original request.
-    for (let attempt = 1; ; attempt++) {
-      const { ok, status } = await this.sender(this.config.url, body, headers);
-      if (ok) return;
-      if (attempt >= 2) {
-        throw new Error(`webhook delivery failed after ${attempt} attempts (status ${status})`);
+    const failed: string[] = [];
+    for (const config of targets) {
+      const headers: Record<string, string> = {
+        'content-type': 'application/json',
+        'x-rvn-event': event,
+        ...(config.secret ? { 'x-rvn-signature': signPayload(config.secret, body) } : {}),
+      };
+      // One retry after a brief backoff; two attempts total, then give up
+      // on this endpoint — the caller audits the failure and never fails
+      // the original request.
+      let delivered = false;
+      for (let attempt = 1; ; attempt++) {
+        const { ok, status } = await this.sender(config.url, body, headers);
+        if (ok) {
+          delivered = true;
+          break;
+        }
+        if (attempt >= 2) break;
+        await new Promise((r) => setTimeout(r, 500));
       }
-      await new Promise((r) => setTimeout(r, 500));
+      if (!delivered) failed.push(config.url);
     }
+    if (failed.length > 0) {
+      throw new Error(`webhook delivery failed for ${failed.length} endpoint(s): ${failed.join(', ')}`);
+    }
+    return targets.length;
   }
 }
 
 /** Build the active dispatcher from the environment; disabled when unconfigured. */
 export function webhookDispatcherFromEnv(env: NodeJS.ProcessEnv = process.env): WebhookDispatcher {
-  return new WebhookDispatcher(webhookConfigFromEnv(env));
+  return new WebhookDispatcher(webhookConfigsFromEnv(env));
 }

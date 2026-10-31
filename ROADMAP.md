@@ -191,6 +191,32 @@ and logs the result in CHANGELOG.md.
     reissue, subasset, unique, presets, anomaly, store, langchain
     suites still green. Remainder: multiple endpoints, per-event
     subscriptions/filtering, and configurable retry/backoff.
+  - [x] 2026-10-31 — v0.16.0 webhooks (slice 2, item partial): multiple
+    endpoints with per-event subscriptions. New `RVN_WEBHOOKS_JSON`
+    env var: a JSON array of `{ url, secret?, events? }` endpoints,
+    where `events` is a subset of the four event types (omitted = all
+    events); the legacy `RVN_WEBHOOK_URL`/`RVN_WEBHOOK_SECRET`
+    endpoint still works and is appended to the list. Malformed JSON,
+    malformed entries, non-http(s) URLs, unknown event names, and
+    entries whose events filter to nothing are skipped — degraded
+    gracefully, never a startup crash. `WebhookDispatcher` now takes a
+    list of configs; `deliver()` fans an event out to every subscribed
+    endpoint (each with its own secret/signature), retries each once,
+    never lets one failing endpoint block the others, and throws
+    listing the failed endpoint URLs (never secrets) when any fail so
+    the server audits `WEBHOOK_DELIVERY_FAILED`; it returns the
+    attempted-endpoint count, and the server audits `WEBHOOK_DELIVERY`
+    only when at least one endpoint was attempted. `/v1/health`
+    reports `webhooks.endpoints` alongside `configured`. Verified by
+    extending `pnpm test:webhooks` (now 60 checks: multi-endpoint
+    config parsing incl. bad-JSON/bad-entry/unknown-event/legacy-merge
+    cases, per-endpoint routing and signing, partial failure, and a
+    second-API integration proving an all-events endpoint gets
+    decided+executed while an executed-only endpoint gets just the
+    executed event); demo, mcp-smoke, approvals, telegram-callback,
+    simulate, reissue, subasset, unique, presets, anomaly, store,
+    langchain suites still green. Remainder: configurable
+    retry/backoff.
 - [ ] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension.
 
 ## Done
