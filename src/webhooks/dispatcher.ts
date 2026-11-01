@@ -20,6 +20,16 @@
  *                        (degraded gracefully, never a startup crash) —
  *                        the same stance as the Telegram config parser.
  *
+ * Slice 3: configurable retry/backoff. Global defaults come from the
+ * environment (RVN_WEBHOOK_MAX_ATTEMPTS, RVN_WEBHOOK_RETRY_DELAY_MS,
+ * RVN_WEBHOOK_RETRY_BACKOFF_FACTOR, RVN_WEBHOOK_RETRY_MAX_DELAY_MS);
+ * a RVN_WEBHOOKS_JSON entry may override any of them per endpoint
+ * (maxAttempts, retryDelayMs, backoffFactor, maxDelayMs). Invalid values
+ * fall back to the default for that field, never a startup crash. The
+ * delay before retry N (1-based, after the Nth failed attempt) is
+ * min(baseDelayMs * backoffFactor^(N-1), maxDelayMs). maxAttempts counts
+ * total attempts, so the historical default of 2 means one retry.
+ *
  * Delivery failures never fail the request that produced the event — the
  * dispatcher throws after its retries and the server audits that as
  * WEBHOOK_DELIVERY_FAILED, exactly like approval-notification failures.
@@ -86,11 +96,93 @@ export function signPayload(secret: string, body: string): string {
   return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
 }
 
+/** Retry/backoff for one endpoint. maxAttempts counts total attempts. */
+export interface WebhookRetryOptions {
+  maxAttempts: number;
+  baseDelayMs: number;
+  backoffFactor: number;
+  maxDelayMs: number;
+}
+
+export const DEFAULT_WEBHOOK_RETRY: WebhookRetryOptions = {
+  maxAttempts: 2,
+  baseDelayMs: 500,
+  backoffFactor: 2,
+  maxDelayMs: 30000,
+};
+
+/** Delay before retry N (1-based: after the Nth failed attempt), capped. */
+export function retryDelayMs(options: WebhookRetryOptions, failedAttempt: number): number {
+  return Math.min(
+    options.baseDelayMs * Math.pow(options.backoffFactor, Math.max(0, failedAttempt - 1)),
+    options.maxDelayMs,
+  );
+}
+
+function parseIntInRange(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === 'string' ? Number(value) : typeof value === 'number' ? value : NaN;
+  if (!Number.isInteger(n) || n < min || n > max) return fallback;
+  return n;
+}
+
+function parsePositiveNumber(value: unknown, fallback: number): number {
+  const n = typeof value === 'string' ? Number(value) : typeof value === 'number' ? value : NaN;
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
+function parseNonNegativeInt(value: unknown, max: number, fallback: number): number {
+  const n = typeof value === 'string' ? Number(value) : typeof value === 'number' ? value : NaN;
+  if (!Number.isInteger(n) || n < 0 || n > max) return fallback;
+  return n;
+}
+
+/** Global retry defaults from the environment; invalid values fall back. */
+export function webhookRetryFromEnv(env: NodeJS.ProcessEnv = process.env): WebhookRetryOptions {
+  return {
+    maxAttempts: parseIntInRange(env.RVN_WEBHOOK_MAX_ATTEMPTS, 1, 10, DEFAULT_WEBHOOK_RETRY.maxAttempts),
+    baseDelayMs: parseNonNegativeInt(env.RVN_WEBHOOK_RETRY_DELAY_MS, 60000, DEFAULT_WEBHOOK_RETRY.baseDelayMs),
+    backoffFactor: parsePositiveNumber(env.RVN_WEBHOOK_RETRY_BACKOFF_FACTOR, DEFAULT_WEBHOOK_RETRY.backoffFactor),
+    maxDelayMs: parseNonNegativeInt(env.RVN_WEBHOOK_RETRY_MAX_DELAY_MS, 600000, DEFAULT_WEBHOOK_RETRY.maxDelayMs),
+  };
+}
+
+/** Per-endpoint retry overrides from a JSON entry; only valid fields kept. */
+function parseEndpointRetry(entry: Record<string, unknown>): Partial<WebhookRetryOptions> {
+  const retry: Partial<WebhookRetryOptions> = {};
+  if (entry.maxAttempts !== undefined) {
+    const n = parseIntInRange(entry.maxAttempts, 1, 10, -1);
+    if (n !== -1) retry.maxAttempts = n;
+  }
+  if (entry.retryDelayMs !== undefined) {
+    const n = parseNonNegativeInt(entry.retryDelayMs, 60000, -1);
+    if (n !== -1) retry.baseDelayMs = n;
+  }
+  if (entry.backoffFactor !== undefined) {
+    const n = parsePositiveNumber(entry.backoffFactor, -1);
+    if (n !== -1) retry.backoffFactor = n;
+  }
+  if (entry.maxDelayMs !== undefined) {
+    const n = parseNonNegativeInt(entry.maxDelayMs, 600000, -1);
+    if (n !== -1) retry.maxDelayMs = n;
+  }
+  return retry;
+}
+
+export function resolveWebhookRetry(
+  global: WebhookRetryOptions,
+  override: Partial<WebhookRetryOptions> | undefined,
+): WebhookRetryOptions {
+  return { ...global, ...override };
+}
+
 export interface WebhookConfig {
   url: string;
   secret?: string;
   /** Subscribed event types; undefined (or absent) means all events. */
   events?: WebhookEvent[];
+  /** Per-endpoint retry overrides; absent means the global defaults. */
+  retry?: Partial<WebhookRetryOptions>;
 }
 
 const ALL_EVENTS: WebhookEvent[] = [
@@ -121,6 +213,8 @@ function parseEndpointEntry(entry: unknown): WebhookConfig | null {
   if (!isHttpUrl(url)) return null;
   const config: WebhookConfig = { url };
   if (typeof secret === 'string' && secret) config.secret = secret;
+  const retry = parseEndpointRetry(entry as Record<string, unknown>);
+  if (Object.keys(retry).length > 0) config.retry = retry;
   if (events !== undefined) {
     if (!Array.isArray(events)) return null;
     const filtered = events.filter(isWebhookEvent);
@@ -185,17 +279,34 @@ export const defaultSender: WebhookSender = async (url, body, headers) => {
   return { ok: res.ok, status: res.status };
 };
 
+export interface WebhookDispatcherOptions {
+  /** Global retry defaults; per-endpoint overrides in WebhookConfig win. */
+  retry?: WebhookRetryOptions;
+  /** Injectable sleep so tests can record delays without waiting. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
 export class WebhookDispatcher {
   readonly name = 'webhook';
   readonly enabled: boolean;
   private readonly configs: WebhookConfig[];
+  private readonly retry: WebhookRetryOptions;
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(
     config: WebhookConfig | WebhookConfig[] | null,
     private readonly sender: WebhookSender = defaultSender,
+    options: WebhookDispatcherOptions = {},
   ) {
     this.configs = config === null ? [] : Array.isArray(config) ? config : [config];
     this.enabled = this.configs.length > 0;
+    this.retry = options.retry ?? DEFAULT_WEBHOOK_RETRY;
+    this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  }
+
+  /** The effective global retry options (per-endpoint overrides excluded). */
+  get retryOptions(): WebhookRetryOptions {
+    return this.retry;
   }
 
   /** Number of configured endpoints (0 when disabled). */
@@ -230,9 +341,10 @@ export class WebhookDispatcher {
         'x-rvn-event': event,
         ...(config.secret ? { 'x-rvn-signature': signPayload(config.secret, body) } : {}),
       };
-      // One retry after a brief backoff; two attempts total, then give up
-      // on this endpoint — the caller audits the failure and never fails
-      // the original request.
+      // Retries with exponential backoff per the effective retry options;
+      // then give up on this endpoint — the caller audits the failure and
+      // never fails the original request.
+      const retry = resolveWebhookRetry(this.retry, config.retry);
       let delivered = false;
       for (let attempt = 1; ; attempt++) {
         const { ok, status } = await this.sender(config.url, body, headers);
@@ -240,8 +352,8 @@ export class WebhookDispatcher {
           delivered = true;
           break;
         }
-        if (attempt >= 2) break;
-        await new Promise((r) => setTimeout(r, 500));
+        if (attempt >= retry.maxAttempts) break;
+        await this.sleep(retryDelayMs(retry, attempt));
       }
       if (!delivered) failed.push(config.url);
     }
@@ -254,5 +366,7 @@ export class WebhookDispatcher {
 
 /** Build the active dispatcher from the environment; disabled when unconfigured. */
 export function webhookDispatcherFromEnv(env: NodeJS.ProcessEnv = process.env): WebhookDispatcher {
-  return new WebhookDispatcher(webhookConfigsFromEnv(env));
+  return new WebhookDispatcher(webhookConfigsFromEnv(env), defaultSender, {
+    retry: webhookRetryFromEnv(env),
+  });
 }

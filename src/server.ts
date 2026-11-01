@@ -306,6 +306,7 @@ async function main() {
     webhooks: {
       configured: webhookDispatcher.enabled,
       endpoints: webhookDispatcher.endpointCount,
+      retry: webhookDispatcher.retryOptions,
     },
     ...(await node.getInfo()),
   }));

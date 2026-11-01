@@ -163,7 +163,7 @@ and logs the result in CHANGELOG.md.
     updated) so it no longer rides in the wheel. Follow-up: the actual
     `twine upload` to PyPI, which needs Paul's PyPI account/token —
     not performed here.
-- [ ] **Webhooks** — POST decision/execution events to a configured URL.
+- [x] **Webhooks** — POST decision/execution events to a configured URL (item complete).
   - [x] 2026-10-30 — v0.15.0 webhooks (slice 1, item partial): new
     `src/webhooks/dispatcher.ts` — `WebhookDispatcher` POSTs four event
     types to a single configured URL: `intent.decided` (every submit
@@ -217,6 +217,27 @@ and logs the result in CHANGELOG.md.
     simulate, reissue, subasset, unique, presets, anomaly, store,
     langchain suites still green. Remainder: configurable
     retry/backoff.
+  - [x] 2026-11-01 — v0.17.0 webhooks (slice 3, item complete):
+    configurable retry/backoff. Global defaults from
+    `RVN_WEBHOOK_MAX_ATTEMPTS` (1–10, default 2 total attempts),
+    `RVN_WEBHOOK_RETRY_DELAY_MS` (0–60000, default 500),
+    `RVN_WEBHOOK_RETRY_BACKOFF_FACTOR` (positive, default 2), and
+    `RVN_WEBHOOK_RETRY_MAX_DELAY_MS` (default 30000); a
+    `RVN_WEBHOOKS_JSON` entry may override any of them per endpoint
+    (`maxAttempts`, `retryDelayMs`, `backoffFactor`, `maxDelayMs`).
+    Invalid values fall back to the default for that field, never a
+    startup crash. Delay before retry N is
+    `min(base * factor^(N-1), maxDelay)`; the dispatcher takes an
+    injectable sleep so tests record delays without waiting.
+    `/v1/health` reports `webhooks.retry`. Verified by extending
+    `pnpm test:webhooks` (now 73 checks: env parsing incl. invalid
+    fallbacks, delay math incl. the cap, per-endpoint parse and
+    override-beats-global, maxAttempts 1 means no sleep, plus a
+    server integration proving the env config reaches `/v1/health`);
+    demo, mcp-smoke, approvals, telegram-callback, simulate, reissue,
+    subasset, unique, presets, anomaly, store, langchain suites still
+    green. The webhooks item is complete; the next top item is rate
+    limiting.
 - [ ] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension.
 
 ## Done

@@ -1,5 +1,5 @@
 /**
- * webhook-test: checks for slices 1–2 of the Webhooks item.
+ * webhook-test: checks for slices 1–3 of the Webhooks item.
  *
  *  pnpm test:webhooks
  *
@@ -20,9 +20,12 @@ import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import {
   buildWebhookPayload,
+  DEFAULT_WEBHOOK_RETRY,
+  retryDelayMs,
   signPayload,
   webhookConfigFromEnv,
   webhookConfigsFromEnv,
+  webhookRetryFromEnv,
   WebhookDispatcher,
 } from '../src/webhooks/dispatcher.js';
 import type { RvnIntent } from '../src/policy/types.js';
@@ -325,6 +328,102 @@ async function main() {
   check('event with no subscribers attempts nothing and returns 0',
     (await unsub.deliver('intent.decided', intent)) === 0);
 
+  // ===== unit: configurable retry/backoff (slice 3) =====
+  check('retry defaults are 2 attempts / 500ms / factor 2 / 30s cap',
+    JSON.stringify(webhookRetryFromEnv({})) === JSON.stringify(DEFAULT_WEBHOOK_RETRY),
+    webhookRetryFromEnv({}));
+  const customRetry = webhookRetryFromEnv({
+    RVN_WEBHOOK_MAX_ATTEMPTS: '4',
+    RVN_WEBHOOK_RETRY_DELAY_MS: '100',
+    RVN_WEBHOOK_RETRY_BACKOFF_FACTOR: '3',
+    RVN_WEBHOOK_RETRY_MAX_DELAY_MS: '5000',
+  });
+  check('retry env overrides parse',
+    customRetry.maxAttempts === 4 && customRetry.baseDelayMs === 100 &&
+      customRetry.backoffFactor === 3 && customRetry.maxDelayMs === 5000, customRetry);
+  const badRetry = webhookRetryFromEnv({
+    RVN_WEBHOOK_MAX_ATTEMPTS: '0',
+    RVN_WEBHOOK_RETRY_DELAY_MS: '-5',
+    RVN_WEBHOOK_RETRY_BACKOFF_FACTOR: '0',
+    RVN_WEBHOOK_RETRY_MAX_DELAY_MS: 'not-a-number',
+  });
+  check('invalid retry env values fall back to defaults',
+    JSON.stringify(badRetry) === JSON.stringify(DEFAULT_WEBHOOK_RETRY), badRetry);
+  check('retry env values above the range fall back to defaults',
+    webhookRetryFromEnv({ RVN_WEBHOOK_MAX_ATTEMPTS: '99' }).maxAttempts === 2);
+  check('retry delay grows exponentially',
+    retryDelayMs({ maxAttempts: 5, baseDelayMs: 100, backoffFactor: 2, maxDelayMs: 30000 }, 1) === 100 &&
+      retryDelayMs({ maxAttempts: 5, baseDelayMs: 100, backoffFactor: 2, maxDelayMs: 30000 }, 2) === 200 &&
+      retryDelayMs({ maxAttempts: 5, baseDelayMs: 100, backoffFactor: 2, maxDelayMs: 30000 }, 3) === 400);
+  check('retry delay is capped at maxDelayMs',
+    retryDelayMs({ maxAttempts: 5, baseDelayMs: 10000, backoffFactor: 10, maxDelayMs: 15000 }, 2) === 15000);
+  check('retry delay with factor 1 stays flat',
+    retryDelayMs({ maxAttempts: 5, baseDelayMs: 250, backoffFactor: 1, maxDelayMs: 30000 }, 3) === 250);
+  const retryParsed = webhookConfigsFromEnv({
+    RVN_WEBHOOKS_JSON: JSON.stringify([
+      { url: 'http://127.0.0.1:9/r', maxAttempts: 4, retryDelayMs: 100, backoffFactor: 3, maxDelayMs: 9000 },
+      { url: 'http://127.0.0.1:9/bad-r', maxAttempts: 0, retryDelayMs: -5, backoffFactor: 0 },
+    ]),
+  });
+  check('per-endpoint retry overrides parse',
+    retryParsed[0].retry?.maxAttempts === 4 && retryParsed[0].retry?.baseDelayMs === 100 &&
+      retryParsed[0].retry?.backoffFactor === 3 && retryParsed[0].retry?.maxDelayMs === 9000, retryParsed);
+  check('invalid per-endpoint retry fields are dropped, endpoint kept',
+    retryParsed[1].retry === undefined, retryParsed[1]);
+
+  const sleeps: number[] = [];
+  let retryAttempts = 0;
+  const retryDispatcher = new WebhookDispatcher(
+    { url: 'http://127.0.0.1:9/hook' },
+    async () => { retryAttempts++; return { ok: false, status: 500 }; },
+    {
+      retry: { maxAttempts: 4, baseDelayMs: 100, backoffFactor: 2, maxDelayMs: 30000 },
+      sleep: async (ms) => { sleeps.push(ms); },
+    },
+  );
+  let retryThrew = false;
+  try {
+    await retryDispatcher.deliver('intent.decided', intent);
+  } catch {
+    retryThrew = true;
+  }
+  check('global retry config drives attempt count and backoff delays',
+    retryThrew && retryAttempts === 4 && JSON.stringify(sleeps) === JSON.stringify([100, 200, 400]), { retryAttempts, sleeps });
+
+  const overrideSleeps: number[] = [];
+  let overrideAttempts = 0;
+  const overrideDispatcher = new WebhookDispatcher(
+    { url: 'http://127.0.0.1:9/hook', retry: { maxAttempts: 3, baseDelayMs: 10, backoffFactor: 1 } },
+    async () => { overrideAttempts++; return { ok: false, status: 500 }; },
+    {
+      retry: { maxAttempts: 2, baseDelayMs: 500, backoffFactor: 2, maxDelayMs: 30000 },
+      sleep: async (ms) => { overrideSleeps.push(ms); },
+    },
+  );
+  try {
+    await overrideDispatcher.deliver('intent.decided', intent);
+  } catch {
+    // expected
+  }
+  check('per-endpoint retry overrides the global config',
+    overrideAttempts === 3 && JSON.stringify(overrideSleeps) === JSON.stringify([10, 10]), { overrideAttempts, overrideSleeps });
+
+  let oneAttempts = 0;
+  const oneDispatcher = new WebhookDispatcher(
+    { url: 'http://127.0.0.1:9/hook' },
+    async () => { oneAttempts++; return { ok: false, status: 500 }; },
+    {
+      retry: { maxAttempts: 1, baseDelayMs: 100, backoffFactor: 2, maxDelayMs: 30000 },
+      sleep: async () => { throw new Error('sleep must not be called with maxAttempts 1'); },
+    },
+  );
+  try {
+    await oneDispatcher.deliver('intent.decided', intent);
+  } catch {
+    // expected
+  }
+  check('maxAttempts 1 means no retry and no sleep', oneAttempts === 1);
+
   // ===== integration: the real API behind a stub receiver =====
   await startStub();
   const api = await startApi();
@@ -486,6 +585,23 @@ async function main() {
         allCalls.every(signatureValid));
     } finally {
       api2.kill();
+    }
+
+    // 8. Retry config reaches the server from the environment (slice 3).
+    const API3_PORT = 3128;
+    const API3 = `http://127.0.0.1:${API3_PORT}`;
+    const api3 = await startApi(API3_PORT, {
+      RVN_WEBHOOK_MAX_ATTEMPTS: '3',
+      RVN_WEBHOOK_RETRY_DELAY_MS: '100',
+      RVN_WEBHOOK_RETRY_BACKOFF_FACTOR: '3',
+    });
+    try {
+      const health3 = await (await fetch(`${API3}/v1/health`)).json() as any;
+      check('health reports the configured retry options',
+        health3.webhooks?.retry?.maxAttempts === 3 && health3.webhooks?.retry?.baseDelayMs === 100 &&
+          health3.webhooks?.retry?.backoffFactor === 3, health3.webhooks);
+    } finally {
+      api3.kill();
     }
   } finally {
     api.kill();

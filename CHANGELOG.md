@@ -1,5 +1,52 @@
 # Changelog
 
+## 2026-11-01 — v0.17.0 (Webhooks, slice 3 — item complete)
+
+- Configurable webhook retry/backoff. Global defaults from the
+  environment: `RVN_WEBHOOK_MAX_ATTEMPTS` (1–10, default 2 total
+  attempts, so the historical one-retry behavior is unchanged),
+  `RVN_WEBHOOK_RETRY_DELAY_MS` (0–60000, default 500),
+  `RVN_WEBHOOK_RETRY_BACKOFF_FACTOR` (positive, default 2), and
+  `RVN_WEBHOOK_RETRY_MAX_DELAY_MS` (default 30000). A
+  `RVN_WEBHOOKS_JSON` entry may override any of them per endpoint
+  (`maxAttempts`, `retryDelayMs`, `backoffFactor`, `maxDelayMs`) —
+  e.g. a flaky dashboard endpoint gets more attempts while a
+  latency-sensitive one gets fewer. The delay before retry N is
+  `min(baseDelayMs * backoffFactor^(N-1), maxDelayMs)`. Invalid
+  values (non-numeric, out of range, non-positive factor) fall back
+  to the default for that field, never a startup crash, and
+  per-endpoint overrides win over the globals.
+- `WebhookDispatcher` takes an optional `{ retry, sleep }` options
+  argument (the two-argument constructor form still works); the
+  server builds it from the environment via
+  `webhookDispatcherFromEnv()`, so no route changes were needed.
+  `/v1/health` now reports `webhooks.retry` alongside `configured`
+  and `endpoints`. No new REST route or MCP tool: webhooks are
+  outbound server configuration.
+- `pnpm test:webhooks` extended to 73 checks: retry env parsing
+  (valid overrides, invalid/out-of-range fallbacks), delay math
+  (exponential growth, the max-delay cap, factor 1 flat),
+  per-endpoint retry parsing (valid overrides kept, invalid fields
+  dropped with the endpoint kept), dispatcher behavior with an
+  injected sleep (global config drives attempt count and the
+  100/200/400ms delay sequence, per-endpoint override beats global,
+  maxAttempts 1 sleeps never), plus a server integration proving
+  the env config reaches `/v1/health` — all green. `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:langchain` still green. `initialize` now reports
+  server version 0.17.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`).
+- Environment note: no `pnpm` binary on this VM — verification ran
+  the direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content.
+- The webhooks roadmap item is complete; the next top item is rate
+  limiting.
+
 ## 2026-10-31 — v0.16.0 (Webhooks, slice 2 — item partial)
 
 - Multiple webhook endpoints with per-event subscriptions. New

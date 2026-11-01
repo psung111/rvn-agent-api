@@ -9,12 +9,9 @@ the single enforcement point.
 
 ## Install
 
-From a checkout of this repo (the package is not on PyPI yet — publishing
-is one `twine upload` away once a PyPI account is set up):
-
 ```bash
-pip install ./langchain_rvn
-# or, for development against the checkout:
+pip install langchain-rvn
+# or, for development against a checkout of this repo:
 pip install -e ./langchain_rvn
 ```
 
