@@ -59,6 +59,15 @@ export interface RvnPolicy {
   assetNamePattern: string;
   /** How long an ALLOW / REQUIRE_APPROVAL decision stays valid. */
   decisionTtlSeconds: number;
+  /**
+   * Optional per-agent token-bucket rate limit (v0.18.0): bucket capacity
+   * in operations, refilling fully over rateLimitWindowSeconds. Both
+   * fields must be set together; either missing means unlimited, so older
+   * policies without them keep working unchanged.
+   */
+  rateLimitMaxOps?: number;
+  /** Window in seconds over which a full rate-limit bucket refills. */
+  rateLimitWindowSeconds?: number;
 }
 
 export interface Decision {

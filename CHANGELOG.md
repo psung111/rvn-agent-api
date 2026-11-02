@@ -1,5 +1,64 @@
 # Changelog
 
+## 2026-11-02 — v0.18.0 (Rate limiting, slice 1 — item partial)
+
+- Per-agent token-bucket rate limiting as a policy dimension. New
+  optional policy fields `rateLimitMaxOps` (bucket capacity, in
+  operations) and `rateLimitWindowSeconds` (the window over which a
+  full bucket refills) — both must be set together; either missing
+  means unlimited, so every pre-existing policy keeps working
+  unchanged. The bucket refills continuously at
+  maxOps/windowSeconds tokens per second, so a 10-op / 60s bucket
+  allows a burst of 10, then roughly one op every 6s sustained.
+- New `src/policy/ratelimit.ts`: a `TokenBucket` keyed by agent (one
+  bucket per agent, shared across all operation kinds in this slice),
+  `rateLimitFromPolicy()` (lenient parse for stored policies —
+  malformed values degrade to unlimited, never a startup crash), and
+  `validateRateLimitFields()` (strict pair-or-neither, positive
+  integers, for PUT and preset-override writes). Fractional refill
+  uses a 1e-9 epsilon so a bucket refilled to exactly one token is
+  not denied by floating-point error.
+- Server gate in `submit()`: one token is spent on every real submit
+  — even one the policy engine would deny, so a flood of denied
+  attempts still throttles — and an exhausted bucket answers 429
+  with a DENY decision (`RATE_LIMIT_EXCEEDED`), audited as DECISION
+  and webhook-notified as `intent.decided` like any decision, but
+  with nothing executed and no approval hold created.
+  `POST /v1/intents/simulate` peeks instead of spending: it reports
+  the DENY an exhausted bucket would produce, with zero side effects
+  (no intent stored, no audit entry, no token spent). Approving or
+  denying a hold never touches the bucket — resolving a hold is not a
+  new operation. PUT `/v1/policies/:agentId` and preset overrides
+  reject half pairs and non-positive/fractional values with 400;
+  `applyPreset` gains `rateLimitMaxOps`/`rateLimitWindowSeconds` as
+  overridable fields. MCP submit tools surface a 429 as an error, so
+  agents see the limit instead of a success-shaped payload; no new
+  REST route or MCP tool (the limit rides the existing submit
+  routes). `initialize` now reports server version 0.18.0
+  (`src/mcp.ts`, `package.json`, `langchain_rvn/pyproject.toml`).
+- New `pnpm test:ratelimit` (`demo/ratelimit-test.ts`, 55 checks):
+  bucket unit checks (burst, exact-boundary refill, peek-without-
+  consuming, per-key isolation, backwards clock), parsing/validation
+  checks, and a booted-API integration — 3-op burst then 429 with no
+  asset created and nothing pending, per-agent isolation (an
+  unlimited agent issues freely while the limited one is exhausted),
+  simulate peek proofs (ALLOW twice, then DENY once spent, with no
+  audit entries), refill over a 2s window, transfers sharing the
+  agent's bucket, PUT and preset-override validation — all green.
+  `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:webhooks`, `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran
+  the direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:ratelimit` script.
+- Remainder of the rate-limiting item: per-kind buckets, buckets
+  persisted in the store (a restart currently refills them), and
+  rate-limit stats. The next top item remains rate limiting.
+
 ## 2026-11-01 — v0.17.0 (Webhooks, slice 3 — item complete)
 
 - Configurable webhook retry/backoff. Global defaults from the

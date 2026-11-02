@@ -1,4 +1,5 @@
 import type { RvnPolicy } from './types.js';
+import { validateRateLimitFields } from './ratelimit.js';
 
 /**
  * Policy preset gallery. A preset is a named, opinionated starting policy;
@@ -141,12 +142,23 @@ export function applyPreset(
       if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
         throw new Error(`override 'decisionTtlSeconds' must be a positive integer`);
       }
+    } else if (key === 'rateLimitMaxOps' || key === 'rateLimitWindowSeconds') {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+        throw new Error(`override '${key}' must be a positive integer`);
+      }
     } else {
       throw new Error(
-        `unknown override field: '${key}' (overridable: ${[...OVERRIDABLE_QTY_FIELDS, ...OVERRIDABLE_LIST_FIELDS, 'assetNamePattern', 'decisionTtlSeconds'].join(', ')})`,
+        `unknown override field: '${key}' (overridable: ${[...OVERRIDABLE_QTY_FIELDS, ...OVERRIDABLE_LIST_FIELDS, 'assetNamePattern', 'decisionTtlSeconds', 'rateLimitMaxOps', 'rateLimitWindowSeconds'].join(', ')})`,
       );
     }
     merged[key] = value;
+  }
+  // A preset carries no rate limit; an override that sets only one half
+  // of the pair would leave a half-configured bucket, so reject it here
+  // rather than silently treating it as unlimited.
+  const rateLimitError = validateRateLimitFields(merged as Partial<RvnPolicy>);
+  if (rateLimitError) {
+    throw new Error(rateLimitError);
   }
   return merged as unknown as RvnPolicy;
 }

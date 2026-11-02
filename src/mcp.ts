@@ -232,7 +232,7 @@ const TOOLS: ToolDef[] = [
         agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
         policy: {
           type: 'object',
-          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds.',
+          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited).',
         },
       },
       required: ['policy'],
@@ -329,7 +329,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
         }),
       });
       const b = body as { decision?: { kind?: string } };
-      const denied = status === 403 || b.decision?.kind === 'DENY';
+      const denied = status === 403 || status === 429 || b.decision?.kind === 'DENY';
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, denied);
     }
     case 'issue_unique': {
@@ -361,7 +361,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
         }),
       });
       const b = body as { decision?: { kind?: string } };
-      const denied = status === 403 || b.decision?.kind === 'DENY';
+      const denied = status === 403 || status === 429 || b.decision?.kind === 'DENY';
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, denied);
     }
     case 'transfer_asset': {
@@ -375,7 +375,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
         }),
       });
       const b = body as { decision?: { kind?: string } };
-      const denied = status === 403 || b.decision?.kind === 'DENY';
+      const denied = status === 403 || status === 429 || b.decision?.kind === 'DENY';
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, denied);
     }
     case 'issue_subasset': {
@@ -510,7 +510,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.17.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.18.0' },
       });
     }
     case 'notifications/initialized':

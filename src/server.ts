@@ -8,6 +8,9 @@ import {
   evaluateIntent,
   isExpired,
   POLICY_PRESETS,
+  rateLimitFromPolicy,
+  TokenBucket,
+  validateRateLimitFields,
   type Decision,
   type RvnIntent,
   type RvnPolicy,
@@ -84,6 +87,10 @@ async function main() {
 
   const policyFor = async (agentId: string): Promise<RvnPolicy> =>
     (await store.policies.get(agentId)) ?? (await store.policies.get('*')) ?? defaultPolicy();
+
+  // Per-agent token buckets for the rate-limit gate (in-memory: a restart
+  // refills every bucket; persisting them in the store is a follow-up).
+  const rateLimiter = new TokenBucket();
 
   /**
    * Deliver a webhook event for an intent. No-op when no webhook URL is
@@ -239,11 +246,38 @@ async function main() {
     execute: () => Promise<string>,
     reply: any,
   ) => {
+    const policy = await policyFor(intent.agentId);
+    const nowMs = Date.now();
+    // Rate-limit gate, before evaluation: a token is spent on every real
+    // submit (even one the policy engine would deny, so a flood of denied
+    // attempts still throttles), and an exhausted bucket answers 429 with
+    // a DENY decision — audited and webhook-notified like any decision,
+    // but nothing executes and no approval hold is created.
+    const rateLimit = rateLimitFromPolicy(policy);
+    if (rateLimit && !rateLimiter.tryConsume(intent.agentId, rateLimit, nowMs)) {
+      const decision: Decision = {
+        intentId: intent.id,
+        agentId: intent.agentId,
+        kind: 'DENY',
+        reasonCodes: ['RATE_LIMIT_EXCEEDED'],
+        decidedAtMs: nowMs,
+        expiresAtMs: nowMs + policy.decisionTtlSeconds * 1000,
+      };
+      await store.intents.putIntent(intent);
+      await store.intents.putDecision(intent.id, decision);
+      await store.audit.append('DECISION', intent.id, intent.agentId, {
+        kind: decision.kind,
+        op: intent.kind,
+        reasonCodes: decision.reasonCodes,
+      });
+      await deliverWebhook('intent.decided', intent, { decision });
+      return reply.code(429).send({ intent, decision });
+    }
     // History is fetched before the intent is stored, so the anomaly
     // baseline is the agent's prior intents only — the current intent
     // never flags itself.
     const history = await store.intents.history(intent.agentId);
-    const decision = await evaluateIntent(intent, await policyFor(intent.agentId), store.ledger, Date.now(), history);
+    const decision = await evaluateIntent(intent, policy, store.ledger, nowMs, history);
     await store.intents.putIntent(intent);
     await store.intents.putDecision(intent.id, decision);
     await store.audit.append('DECISION', intent.id, intent.agentId, {
@@ -569,12 +603,31 @@ async function main() {
     // Deliberately pure: no intents.set, no decisions.set, no ledger writes,
     // no audit entries, no approver notifications, no node calls.
     // History is read-only here: a simulation runs the same anomaly gate
-    // as a real submit but never enters the baseline itself.
+    // as a real submit but never enters the baseline itself. The rate
+    // limit is peeked, not consumed: a simulation reports the DENY it
+    // would get from an exhausted bucket without spending a token.
+    const simPolicy = await policyFor(intent.agentId);
+    const simNow = Date.now();
+    const simRateLimit = rateLimitFromPolicy(simPolicy);
+    if (simRateLimit && !rateLimiter.wouldAllow(intent.agentId, simRateLimit, simNow)) {
+      return {
+        simulated: true,
+        decision: {
+          intentId: intent.id,
+          agentId: intent.agentId,
+          kind: 'DENY',
+          reasonCodes: ['RATE_LIMIT_EXCEEDED'],
+          decidedAtMs: simNow,
+          expiresAtMs: simNow + simPolicy.decisionTtlSeconds * 1000,
+        },
+        note: 'dry run — no intent stored, no spend recorded, no audit entry, nothing executed, no rate-limit token spent',
+      };
+    }
     const decision = await evaluateIntent(
       intent,
-      await policyFor(intent.agentId),
+      simPolicy,
       store.ledger,
-      Date.now(),
+      simNow,
       await store.intents.history(intent.agentId),
     );
     return {
@@ -726,6 +779,10 @@ async function main() {
       new RegExp(b.assetNamePattern!);
     } catch {
       return reply.code(400).send({ error: 'assetNamePattern is not a valid regex' });
+    }
+    const rateLimitError = validateRateLimitFields(b);
+    if (rateLimitError) {
+      return reply.code(400).send({ error: rateLimitError });
     }
     await store.policies.set(b as RvnPolicy);
     await store.audit.append('DECISION', 'policy-update', agentId, { kind: 'POLICY_REPLACED' });

@@ -239,6 +239,32 @@ and logs the result in CHANGELOG.md.
     green. The webhooks item is complete; the next top item is rate
     limiting.
 - [ ] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension.
+  - [x] 2026-11-02 — v0.18.0 rate limiting (slice 1, item partial):
+    new `src/policy/ratelimit.ts` — `TokenBucket` (continuous refill at
+    maxOps/windowSeconds tokens per second, fractional tokens, fresh
+    buckets start full, backwards clocks never drain) plus
+    `rateLimitFromPolicy()` (lenient: anything malformed degrades to
+    unlimited, never a crash) and `validateRateLimitFields()` (strict:
+    both-or-neither, positive integers). New optional policy fields
+    `rateLimitMaxOps` / `rateLimitWindowSeconds` — unset on every
+    existing policy, so all prior behavior is unchanged. The server
+    spends one token per agent per real submit (even one the policy
+    engine would deny, so denied floods still throttle) and answers
+    429 with a DENY decision (`RATE_LIMIT_EXCEEDED`, audited and
+    webhook-notified like any decision, nothing executed, no hold
+    created); `simulate` peeks via `wouldAllow()` and reports the DENY
+    it would get without spending a token; approve/deny never touch
+    the bucket. PUT validation and preset overrides enforce the
+    pair-or-neither rule (half pairs 400). MCP submit tools surface
+    429 as errors. Verified with new `pnpm test:ratelimit`
+    (`demo/ratelimit-test.ts`, 55 checks: bucket burst/refill/peek/
+    per-key isolation, parsing/validation, burst→429 with no asset
+    created, per-agent isolation, simulate peek proofs, 2s-window
+    refill, transfers sharing the bucket, PUT + preset validation);
+    demo, mcp-smoke, approvals, telegram-callback, simulate, reissue,
+    subasset, unique, presets, anomaly, store, webhooks, langchain
+    suites still green. Remainder: per-kind buckets, buckets persisted
+    in the store (a restart currently refills them), rate-limit stats.
 
 ## Done
 
