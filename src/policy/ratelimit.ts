@@ -1,8 +1,8 @@
 import type { RvnPolicy } from './types.js';
 
 /**
- * Rate limiting (v0.18.0, slice 1): per-agent token-bucket operation
- * limits as a policy dimension.
+ * Rate limiting (v0.18.0 slice 1, v0.19.0 slice 2): per-agent
+ * token-bucket operation limits as a policy dimension.
  *
  * A policy opts in by setting BOTH fields; either one missing (or
  * invalid) means unlimited, so every pre-existing policy keeps working
@@ -21,6 +21,12 @@ import type { RvnPolicy } from './types.js';
  * fast an agent submits, not on any single kind. The bucket lives in
  * server memory, so a restart refills it; persisting buckets in the store
  * and per-kind buckets are follow-ups.
+ *
+ * Slice 2 adds a read-only snapshot (GET /v1/ratelimit/:agentId): the
+ * current whole-token balance, refill rate, and time until the next token
+ * and until full — computed from the same refill math as wouldAllow, but
+ * never spending a token and never advancing the bucket's clock, so
+ * reading stats can neither throttle nor un-throttle an agent.
  *
  * The gate lives in the server, not in evaluateIntent: it consumes a
  * token on every real submit (even one the policy engine would deny, so
@@ -125,4 +131,46 @@ export class TokenBucket {
     this.buckets.set(key, { tokens: Math.max(0, state.tokens - 1), updatedMs: nowMs });
     return true;
   }
+
+  /**
+   * Read-only snapshot of a bucket: the current whole-token balance,
+   * refill rate, and time until the next token and until full. Pure —
+   * it uses the same refill math as wouldAllow but neither spends a
+   * token nor stores the refilled level, so reading stats never changes
+   * what the next submit sees. A never-touched bucket reports full.
+   */
+  snapshot(key: string, config: RateLimitConfig, nowMs: number = Date.now()): RateLimitStats {
+    const tokens = this.refilled(key, config, nowMs).tokens;
+    const rate = config.maxOps / config.windowSeconds;
+    const whole = Math.min(config.maxOps, Math.floor(tokens + TOKEN_EPSILON));
+    const full = tokens >= config.maxOps - TOKEN_EPSILON;
+    // Time until the next whole token: a bucket at exactly N tokens
+    // needs one full token's worth of refill, not zero.
+    const secondsUntilNextToken = full ? 0 : (whole + 1 - tokens) / rate;
+    return {
+      maxOps: config.maxOps,
+      windowSeconds: config.windowSeconds,
+      tokensAvailable: whole,
+      refillRatePerSecond: rate,
+      secondsUntilNextToken,
+      secondsUntilFull: full ? 0 : (config.maxOps - tokens) / rate,
+      wouldAllow: tokens >= 1 - TOKEN_EPSILON,
+    };
+  }
+}
+
+/** Read-only rate-limit state for one agent, as served by GET /v1/ratelimit/:agentId. */
+export interface RateLimitStats {
+  maxOps: number;
+  windowSeconds: number;
+  /** Whole tokens available right now (fractional refill rounded down). */
+  tokensAvailable: number;
+  /** Continuous refill rate, in tokens per second. */
+  refillRatePerSecond: number;
+  /** Seconds until the next whole token refills (0 when the bucket is full). */
+  secondsUntilNextToken: number;
+  /** Seconds until the bucket is completely full (0 when full). */
+  secondsUntilFull: number;
+  /** Whether a submit right now would find a whole token. */
+  wouldAllow: boolean;
 }

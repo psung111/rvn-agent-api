@@ -712,6 +712,21 @@ async function main() {
     return { pending };
   });
 
+  /**
+   * Rate-limit stats for one agent (read-only: the snapshot never spends
+   * a token and never advances the bucket's clock, so polling it can
+   * neither throttle nor un-throttle the agent). Agents without a
+   * rate-limit pair report { limited: false }; a fresh limited agent
+   * reports a full bucket.
+   */
+  app.get('/v1/ratelimit/:agentId', async (req) => {
+    const { agentId } = req.params as { agentId: string };
+    const policy = await policyFor(agentId);
+    const config = rateLimitFromPolicy(policy);
+    if (!config) return { agentId, limited: false };
+    return { agentId, limited: true, ...rateLimiter.snapshot(agentId, config) };
+  });
+
   app.get('/v1/audit', async (req) => {
     const q = req.query as { limit?: string };
     return { chainValid: (await store.audit.verify()) === -1, entries: await store.audit.tail(Number(q.limit ?? 50)) };

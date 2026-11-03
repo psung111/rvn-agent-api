@@ -114,6 +114,30 @@ async function main(): Promise<void> {
   check('buckets are per-key: another key is unaffected',
     bucket.tryConsume('c', cfg, 21000) === true);
 
+  // ---- Unit: snapshot (v0.19.0 stats) ----
+  const snapFresh = bucket.snapshot('snap-fresh', cfg, 1000);
+  check('snapshot of a fresh bucket reports full',
+    snapFresh.tokensAvailable === 3 && snapFresh.wouldAllow === true &&
+    snapFresh.secondsUntilNextToken === 0 && snapFresh.secondsUntilFull === 0 &&
+    snapFresh.refillRatePerSecond === 0.05, snapFresh);
+  const snapEmpty = bucket.snapshot('a', cfg, 21000);
+  check('snapshot of an exhausted bucket reports 0 tokens and refill times',
+    snapEmpty.tokensAvailable === 0 && snapEmpty.wouldAllow === false &&
+    snapEmpty.secondsUntilNextToken === 20 && snapEmpty.secondsUntilFull === 60, snapEmpty);
+  const snapPure1 = bucket.snapshot('snap-pure', cfg, 1000);
+  const snapPure2 = bucket.snapshot('snap-pure', cfg, 1000);
+  check('snapshot is pure: two snapshots agree and spend nothing',
+    JSON.stringify(snapPure1) === JSON.stringify(snapPure2) &&
+    bucket.tryConsume('snap-pure', cfg, 1000) && bucket.tryConsume('snap-pure', cfg, 1000) &&
+    bucket.tryConsume('snap-pure', cfg, 1000));
+  const partial = new TokenBucket();
+  partial.tryConsume('p', cfg, 1000);
+  partial.tryConsume('p', cfg, 1000);
+  const snapPartial = partial.snapshot('p', cfg, 11000);
+  check('snapshot partial refill: 1.5 tokens -> 1 whole, 10s to next, 30s to full',
+    snapPartial.tokensAvailable === 1 && snapPartial.wouldAllow === true &&
+    snapPartial.secondsUntilNextToken === 10 && snapPartial.secondsUntilFull === 30, snapPartial);
+
   // ---- Unit: policy parsing / validation ----
   check('rateLimitFromPolicy: full pair parses',
     JSON.stringify(rateLimitFromPolicy({ ...defaultPolicy(), rateLimitMaxOps: 5, rateLimitWindowSeconds: 60 }))
@@ -265,6 +289,33 @@ async function main(): Promise<void> {
       preset: 'balanced', overrides: { rateLimitMaxOps: 2 },
     });
     check('preset apply with a half rate-limit override 400s', presetHalf.status === 400, presetHalf);
+
+    // ---- H. rate-limit stats endpoint (v0.19.0) ----
+    const burstStats = await get('/v1/ratelimit/rl-burst');
+    check('stats for an exhausted agent: limited, 0 tokens, no allow, ~1200s to next token',
+      burstStats.json?.limited === true && burstStats.json?.maxOps === 3 &&
+      burstStats.json?.windowSeconds === 3600 && burstStats.json?.tokensAvailable === 0 &&
+      burstStats.json?.wouldAllow === false &&
+      burstStats.json?.secondsUntilNextToken > 1000 && burstStats.json?.secondsUntilNextToken <= 1200, burstStats.json);
+    check('reading stats spends nothing: rl-burst still 429s afterwards',
+      (await issue('rl-burst', 'RLB5')).status === 429 &&
+      (await get('/v1/ratelimit/rl-burst')).json?.tokensAvailable === 0);
+    const freeStats = await get('/v1/ratelimit/rl-free');
+    check('stats for an unlimited agent report limited: false',
+      freeStats.json?.limited === false && freeStats.json?.agentId === 'rl-free', freeStats.json);
+    check('policy set for rl-stats (2 ops / 3600s)',
+      (await setPolicy('rl-stats', { rateLimitMaxOps: 2, rateLimitWindowSeconds: 3600 })).status === 200);
+    const freshStats = await get('/v1/ratelimit/rl-stats');
+    check('stats for a fresh limited agent report a full bucket',
+      freshStats.json?.limited === true && freshStats.json?.tokensAvailable === 2 &&
+      freshStats.json?.wouldAllow === true && freshStats.json?.secondsUntilNextToken === 0 &&
+      freshStats.json?.secondsUntilFull === 0, freshStats.json);
+    check('rl-stats issue 1 ALLOWs', (await issue('rl-stats', 'RLSSTAT1')).status === 200);
+    const afterOne = await get('/v1/ratelimit/rl-stats');
+    check('stats after one spend report 1 token left and still allow',
+      afterOne.json?.tokensAvailable === 1 && afterOne.json?.wouldAllow === true, afterOne.json);
+    check('stats for an unknown agent (default policy, unlimited) report limited: false',
+      (await get('/v1/ratelimit/rl-never-seen')).json?.limited === false);
 
     // ---- Audit chain still valid ----
     const audit = await get('/v1/audit?limit=200');

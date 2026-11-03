@@ -239,6 +239,17 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
+    def get_ratelimit() -> str:
+        """Read the calling agent's rate-limit stats: whether it is
+        limited, the whole-token balance, refill rate, and seconds until
+        the next token and until full. Read-only — checking stats never
+        spends a token."""
+        try:
+            return _dump(client.get_ratelimit())
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
     def get_audit(limit: int = 50) -> str:
         """Read the tail of the hash-chained audit log with its chain
         validity flag. Use it to verify what actually happened."""
@@ -271,6 +282,7 @@ def build_tools(client: RvnApiClient) -> list:
         set_policy,
         list_presets,
         apply_preset,
+        get_ratelimit,
         get_audit,
         create_wallet,
     ]

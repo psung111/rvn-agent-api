@@ -19,6 +19,7 @@
  *   - set_policy       -> PUT  /v1/policies/:agentId
  *   - list_presets     -> GET  /v1/policies/presets
  *   - apply_preset     -> POST /v1/policies/:agentId/preset
+ *   - get_ratelimit    -> GET  /v1/ratelimit/:agentId
  *
  * The MCP server is only a transport: the REST API stays the single
  * enforcement point — every tool call runs through the policy engine and the
@@ -266,6 +267,20 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'get_ratelimit',
+    description:
+      'Read an agent\'s rate-limit stats (GET /v1/ratelimit/:agentId): whether the agent ' +
+      'is rate-limited, the whole-token balance, refill rate, and seconds until the next ' +
+      'token and until full. Read-only — checking stats never spends a token, so polling ' +
+      'it can neither throttle nor un-throttle the agent. Unlimited agents report limited: false.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
+      },
+    },
+  },
+  {
     name: 'list_assets',
     description: 'List assets known to the node, optionally filtered by a glob pattern.',
     inputSchema: {
@@ -464,6 +479,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       });
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
+    case 'get_ratelimit': {
+      const agentId = typeof args.agentId === 'string' && args.agentId ? args.agentId : 'agent-1';
+      const { status, body } = await api(`/v1/ratelimit/${encodeURIComponent(agentId)}`);
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
     case 'list_assets': {
       const pattern = typeof args.pattern === 'string' && args.pattern ? args.pattern : '*';
       const { status, body } = await api(`/v1/assets?pattern=${encodeURIComponent(pattern)}`);
@@ -510,7 +530,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.18.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.19.0' },
       });
     }
     case 'notifications/initialized':

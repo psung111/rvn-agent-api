@@ -265,6 +265,27 @@ and logs the result in CHANGELOG.md.
     subasset, unique, presets, anomaly, store, webhooks, langchain
     suites still green. Remainder: per-kind buckets, buckets persisted
     in the store (a restart currently refills them), rate-limit stats.
+  - [x] 2026-11-03 — v0.19.0 rate limiting (slice 2, item partial):
+    rate-limit stats. New `TokenBucket.snapshot()` — a pure read of the
+    bucket (same refill math as `wouldAllow`, but it neither spends a
+    token nor stores the refilled level, so polling stats can neither
+    throttle nor un-throttle an agent): whole-token balance, refill
+    rate, seconds until the next token and until full, and wouldAllow;
+    a never-touched bucket reports full. New `GET /v1/ratelimit/:agentId`
+    — limited agents get the snapshot (resolved through the same
+    agent-or-`*`-or-default policy lookup as the submit gate),
+    unlimited agents get `{ limited: false }`. New `get_ratelimit` MCP
+    tool and LangChain client method + tool (18 tools now), keeping
+    the "adapters cover every route" invariant. Verified by extending
+    `pnpm test:ratelimit` (unit snapshot checks: fresh/empty/partial
+    refill math, snapshot purity; integration: exhausted/fresh/
+    after-one-spend/unlimited/unknown-agent stats, plus the proof
+    that reading stats leaves a 429 in place), a new MCP smoke
+    section (4 checks), and `pnpm test:langchain` (18 tools, client +
+    tool stats shape); demo, mcp-smoke, approvals,
+    telegram-callback, simulate, reissue, subasset, unique, presets,
+    anomaly, store, webhooks, langchain suites still green.
+    Remainder: per-kind buckets, buckets persisted in the store.
 
 ## Done
 

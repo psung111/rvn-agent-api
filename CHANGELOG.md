@@ -1,5 +1,56 @@
 # Changelog
 
+## 2026-11-03 — v0.19.0 (Rate limiting, slice 2 — item partial)
+
+- Rate-limit stats, read-only by construction. New
+  `TokenBucket.snapshot()` in `src/policy/ratelimit.ts`: the current
+  whole-token balance (fractional refill rounded down), refill rate in
+  tokens per second, seconds until the next whole token and until the
+  bucket is full, and `wouldAllow` — computed with the same refill
+  math as `wouldAllow()`, but pure: it neither spends a token nor
+  stores the refilled level, so polling stats can neither throttle
+  nor un-throttle an agent. A bucket at exactly N tokens needs one
+  full token's refill for the next whole token, not zero; a
+  never-touched bucket reports full.
+- New `GET /v1/ratelimit/:agentId`: the agent's policy is resolved
+  through the same agent-or-`*`-or-default lookup as the submit gate,
+  so the stats always describe the limit actually enforced. Limited
+  agents get `{ agentId, limited: true, maxOps, windowSeconds,
+  tokensAvailable, refillRatePerSecond, secondsUntilNextToken,
+  secondsUntilFull, wouldAllow }`; unlimited agents (including
+  never-seen ones on the default policy) get
+  `{ agentId, limited: false }`. No new policy fields, no audit
+  entries, no webhook events — a stats read is not an operation.
+- Adapters keep the "cover every route" invariant: new
+  `get_ratelimit` MCP tool (proxying the route) and a LangChain
+  client method + tool (`langchain_rvn` now builds 18 tools).
+  `initialize` now reports server version 0.19.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`).
+- `pnpm test:ratelimit` extended (unit snapshot checks — fresh
+  bucket full, exhausted bucket 0 tokens with 20s to next / 60s to
+  full on a 3-op/60s bucket, partial refill 1.5 tokens -> 1 whole
+  with 10s to next / 30s to full, snapshot purity across two reads
+  and three subsequent consumes; integration — exhausted agent
+  stats with ~1200s to the next token, stats reads leaving a 429 in
+  place, unlimited/unknown agents reporting `limited: false`, a
+  fresh 2-op bucket reporting full and 1 token after one spend) —
+  all green. `demo/mcp-smoke.ts` gained a rate-limit section (4
+  checks: full bucket, 1 token after one spend, unlimited agent).
+  `pnpm test:langchain` updated (18 tools, client + tool stats
+  shape) — all green. `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`,
+  `pnpm test:simulate`, `pnpm test:reissue`, `pnpm test:subasset`,
+  `pnpm test:unique`, `pnpm test:presets`, `pnpm test:anomaly`,
+  `pnpm test:store`, `pnpm test:webhooks` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran
+  the direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content.
+- Remainder of the rate-limiting item: per-kind buckets and buckets
+  persisted in the store (a restart currently refills them). The
+  next top item remains rate limiting.
+
 ## 2026-11-02 — v0.18.0 (Rate limiting, slice 1 — item partial)
 
 - Per-agent token-bucket rate limiting as a policy dimension. New

@@ -286,6 +286,14 @@ class RvnApiClient:
             {"preset": preset, "overrides": overrides or {}},
         )
 
+    # -- rate limiting ----------------------------------------------------
+
+    def get_ratelimit(self, agent_id: Optional[str] = None) -> dict[str, Any]:
+        """Read-only rate-limit stats for an agent (never spends a token)."""
+        return self._call(
+            "GET", f"/v1/ratelimit/{agent_id or self.agent_id}"
+        )
+
     # -- audit ------------------------------------------------------------
 
     def get_audit(self, limit: int = 50) -> dict[str, Any]:

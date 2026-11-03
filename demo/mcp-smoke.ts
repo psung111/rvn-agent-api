@@ -288,6 +288,27 @@ async function main(): Promise<void> {
   check('apply_preset with an unknown preset surfaces an error',
     !badPreset.ok && badPreset.body.error, badPreset.body);
 
+  // 17. rate-limit stats via MCP
+  const rlPolicy = await toolCall('get_policy', { agentId: agent });
+  const rlSet = await toolCall('set_policy', {
+    agentId: agent,
+    policy: { ...rlPolicy.body, agentId: agent, allowedDestinations: [walletA], rateLimitMaxOps: 2, rateLimitWindowSeconds: 3600 },
+  });
+  check('set_policy with a rate-limit pair via MCP 200s',
+    rlSet.ok && rlSet.body.httpStatus === 200, rlSet.body);
+  const rlFresh = await toolCall('get_ratelimit', { agentId: agent });
+  check('get_ratelimit via MCP reports a full bucket',
+    rlFresh.ok && rlFresh.body.limited === true && rlFresh.body.tokensAvailable === 2 &&
+    rlFresh.body.wouldAllow === true, rlFresh.body);
+  const rlIssue = await toolCall('issue_asset', { agentId: agent, name: 'SMOKERL', qty: '500', toAddress: walletA });
+  check('issue via MCP under a rate limit ALLOWs', rlIssue.ok && rlIssue.body.decision?.kind === 'ALLOW', rlIssue.body);
+  const rlAfter = await toolCall('get_ratelimit', { agentId: agent });
+  check('get_ratelimit via MCP reports 1 token after one spend',
+    rlAfter.ok && rlAfter.body.tokensAvailable === 1 && rlAfter.body.wouldAllow === true, rlAfter.body);
+  const rlFree = await toolCall('get_ratelimit', { agentId: 'mcp-smoke-unlimited' });
+  check('get_ratelimit via MCP reports limited:false for an unlimited agent',
+    rlFree.ok && rlFree.body.limited === false, rlFree.body);
+
   child.kill();
   shuttingDown = true;
   console.log(process.exitCode ? 'MCP smoke: FAILED' : 'MCP smoke: all green');
