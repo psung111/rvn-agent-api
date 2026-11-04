@@ -38,6 +38,27 @@ export interface AuditStore {
 }
 
 /**
+ * Durable rate-limit bucket state, keyed by agent id (the server keys its
+ * token buckets by agent). `tokens` is fractional; `updatedMs` is the
+ * instant the balance was last computed, so refill across a restart is
+ * the elapsed time since that timestamp. Mirrors the TokenBucket's
+ * BucketState (src/policy/ratelimit.ts) without importing policy code
+ * into the store seam.
+ */
+export interface RateLimitBucketState {
+  tokens: number;
+  updatedMs: number;
+}
+
+/** Persisted token buckets for the rate-limit gate. */
+export interface RateLimitStore {
+  get(key: string): Promise<RateLimitBucketState | undefined>;
+  set(key: string, state: RateLimitBucketState): Promise<void>;
+  /** Every stored bucket, for restore at boot. */
+  all(): Promise<Array<{ key: string; state: RateLimitBucketState }>>;
+}
+
+/**
  * All durable state behind one seam. The server only talks to this interface;
  * `kind` tells operators which backend is actually serving (also on /v1/health).
  */
@@ -47,5 +68,6 @@ export interface Store {
   readonly intents: IntentStore;
   readonly ledger: IssueLedger;
   readonly audit: AuditStore;
+  readonly ratelimits: RateLimitStore;
   close(): Promise<void>;
 }

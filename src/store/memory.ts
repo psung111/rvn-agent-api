@@ -2,7 +2,7 @@ import { AuditLog } from '../audit.js';
 import { defaultPolicy, InMemoryIssueLedger } from '../policy/index.js';
 import type { AuditEntry, AuditKind } from '../audit.js';
 import type { Decision, RvnIntent, RvnPolicy } from '../policy/index.js';
-import type { AuditStore, IntentStore, PolicyStore, Store } from './types.js';
+import type { AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
 
 class MemoryPolicyStore implements PolicyStore {
   private policies = new Map<string, RvnPolicy>([['*', defaultPolicy()]]);
@@ -62,6 +62,20 @@ class MemoryAuditStore implements AuditStore {
   }
 }
 
+class MemoryRateLimitStore implements RateLimitStore {
+  private buckets = new Map<string, RateLimitBucketState>();
+  async get(key: string): Promise<RateLimitBucketState | undefined> {
+    const state = this.buckets.get(key);
+    return state ? { ...state } : undefined;
+  }
+  async set(key: string, state: RateLimitBucketState): Promise<void> {
+    this.buckets.set(key, { ...state });
+  }
+  async all(): Promise<Array<{ key: string; state: RateLimitBucketState }>> {
+    return [...this.buckets.entries()].map(([key, state]) => ({ key, state: { ...state } }));
+  }
+}
+
 /** Ephemeral backend: everything lives in process memory. */
 export class MemoryStore implements Store {
   readonly kind = 'memory' as const;
@@ -69,6 +83,7 @@ export class MemoryStore implements Store {
   readonly intents = new MemoryIntentStore();
   readonly ledger = new InMemoryIssueLedger();
   readonly audit = new MemoryAuditStore();
+  readonly ratelimits = new MemoryRateLimitStore();
   async close(): Promise<void> {
     // Nothing to release.
   }

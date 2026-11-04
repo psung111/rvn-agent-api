@@ -21,6 +21,10 @@
  *     after ~1.2s of refill
  *   - transfers share the agent's bucket: 1-op agent transfers once, then
  *     429s on the second transfer
+ *   - persistence (v0.20.0): TokenBucket dump/restore round-trips a
+ *     partially spent bucket (refill continues from the saved timestamp,
+ *     not from the restore instant), malformed restores are ignored, and
+ *     the MemoryStore ratelimits seam round-trips buckets
  *   - PUT validation: half a pair, zero, and fractional values all 400;
  *     a full valid pair 200s and reads back
  *   - preset overrides: a full rate-limit override applies, a half
@@ -37,6 +41,7 @@ import {
   validateRateLimitFields,
 } from '../src/policy/ratelimit.js';
 import { defaultPolicy } from '../src/policy/index.js';
+import { MemoryStore } from '../src/store/memory.js';
 
 const repo = process.cwd();
 const tsx = join(repo, 'node_modules', '.bin', 'tsx');
@@ -137,6 +142,52 @@ async function main(): Promise<void> {
   check('snapshot partial refill: 1.5 tokens -> 1 whole, 10s to next, 30s to full',
     snapPartial.tokensAvailable === 1 && snapPartial.wouldAllow === true &&
     snapPartial.secondsUntilNextToken === 10 && snapPartial.secondsUntilFull === 30, snapPartial);
+
+  // ---- Unit: persistence (v0.20.0) — dump / restore / store seam ----
+  const persisting = new TokenBucket();
+  persisting.tryConsume('persist-agent', cfg, 1000);
+  persisting.tryConsume('persist-agent', cfg, 1000); // 1 token left at t=1000
+  const dumped = persisting.dump();
+  check('dump returns the spent bucket state',
+    dumped.length === 1 && dumped[0].key === 'persist-agent' &&
+    dumped[0].state.tokens === 1 && dumped[0].state.updatedMs === 1000, dumped);
+  check('stored returns a copy: mutating it does not touch the live bucket',
+    (() => {
+      const s = persisting.stored('persist-agent')!;
+      s.tokens = 99;
+      return persisting.stored('persist-agent')!.tokens === 1;
+    })());
+  check('stored is undefined for a never-touched key', persisting.stored('nobody') === undefined);
+  const restored = new TokenBucket();
+  for (const { key, state } of dumped) restored.restore(key, state);
+  check('restore resumes the saved balance: 1 consume succeeds, the next fails',
+    restored.tryConsume('persist-agent', cfg, 1000) === true &&
+    restored.tryConsume('persist-agent', cfg, 1000) === false);
+  const restoredLater = new TokenBucket();
+  for (const { key, state } of dumped) restoredLater.restore(key, state);
+  check('refill after restore runs from the saved timestamp, not the restore instant',
+    restoredLater.tryConsume('persist-agent', cfg, 21000) === true && // 20s -> +1 token
+    restoredLater.tryConsume('persist-agent', cfg, 21000) === true &&
+    restoredLater.tryConsume('persist-agent', cfg, 21000) === false);
+  const corrupt = new TokenBucket();
+  corrupt.restore('bad-nan', { tokens: NaN, updatedMs: 1000 });
+  corrupt.restore('bad-neg', { tokens: -1, updatedMs: 1000 });
+  corrupt.restore('bad-time', { tokens: 1, updatedMs: -5 });
+  check('malformed restores are ignored: those keys still report full buckets',
+    corrupt.dump().length === 0 && corrupt.wouldAllow('bad-nan', cfg, 1000) === true);
+  const memStore = new MemoryStore();
+  await memStore.ratelimits.set('mem-agent', { tokens: 0.5, updatedMs: 4242 });
+  const memGot = await memStore.ratelimits.get('mem-agent');
+  check('memory ratelimits seam: set/get round-trips fractional tokens',
+    memGot?.tokens === 0.5 && memGot?.updatedMs === 4242, memGot);
+  check('memory ratelimits seam: unknown key is undefined',
+    (await memStore.ratelimits.get('nobody')) === undefined);
+  await memStore.ratelimits.set('mem-agent-2', { tokens: 2, updatedMs: 5000 });
+  const memAll = await memStore.ratelimits.all();
+  check('memory ratelimits seam: all() lists every stored bucket',
+    memAll.length === 2 && memAll.some((b) => b.key === 'mem-agent' && b.state.tokens === 0.5) &&
+    memAll.some((b) => b.key === 'mem-agent-2' && b.state.updatedMs === 5000), memAll);
+  await memStore.close();
 
   // ---- Unit: policy parsing / validation ----
   check('rateLimitFromPolicy: full pair parses',

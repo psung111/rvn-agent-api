@@ -18,9 +18,19 @@ import type { RvnPolicy } from './types.js';
  *
  * Slice 1 scope: one bucket per agent, shared across all operation kinds
  * (issue / reissue / sub-asset / unique / transfer) — the limit is on how
- * fast an agent submits, not on any single kind. The bucket lives in
- * server memory, so a restart refills it; persisting buckets in the store
- * and per-kind buckets are follow-ups.
+ * fast an agent submits, not on any single kind. Per-kind buckets are a
+ * follow-up.
+ *
+ * Slice 3 persists buckets in the store (see src/store/types.ts): the
+ * server restores every saved bucket at boot and writes a bucket back
+ * after every gate evaluation, so a restart no longer refills an
+ * exhausted bucket. A bucket saved under a policy that has since changed
+ * is simply reinterpreted under the new config — refill math clamps the
+ * balance to the new capacity, and a bucket whose window shrank refills
+ * faster, never slower than the saved state implies. Persistence is
+ * best-effort: a failed write is logged and never fails the submit that
+ * produced it, and the in-memory bucket still enforces the limit for the
+ * life of the process.
  *
  * Slice 2 adds a read-only snapshot (GET /v1/ratelimit/:agentId): the
  * current whole-token balance, refill rate, and time until the next token
@@ -85,7 +95,13 @@ export function validateRateLimitFields(
   return undefined;
 }
 
-interface BucketState {
+/**
+ * Durable bucket state, as stored in the store seam. `tokens` is
+ * fractional (refill is continuous); `updatedMs` is the instant the
+ * balance was last computed, so refill across a restart is exactly the
+ * elapsed time since this timestamp — never a double-count.
+ */
+export interface BucketState {
   tokens: number;
   updatedMs: number;
 }
@@ -130,6 +146,47 @@ export class TokenBucket {
     }
     this.buckets.set(key, { tokens: Math.max(0, state.tokens - 1), updatedMs: nowMs });
     return true;
+  }
+
+  /**
+   * The bucket's stored state for one key, for persistence — a copy, so
+   * callers cannot mutate the live bucket through it. Undefined when the
+   * key has never been touched (a fresh bucket, which restores as full).
+   */
+  stored(key: string): BucketState | undefined {
+    const state = this.buckets.get(key);
+    return state ? { ...state } : undefined;
+  }
+
+  /**
+   * Dump every bucket's stored state, for persistence. Fresh (never
+   * touched) keys are absent — they restore as full, which is what a
+   * dump of a full bucket would round-trip to anyway.
+   */
+  dump(): Array<{ key: string; state: BucketState }> {
+    return [...this.buckets.entries()].map(([key, state]) => ({ key, state: { ...state } }));
+  }
+
+  /**
+   * Restore one bucket from persisted state. Malformed states (non-finite
+   * numbers, negative tokens, negative timestamps) are ignored, never
+   * stored — a corrupt row must not take the gate down. A restored
+   * balance above the current capacity is harmless: refill math clamps
+   * it on the next evaluation.
+   */
+  restore(key: string, state: BucketState): void {
+    if (
+      !state ||
+      typeof state.tokens !== 'number' ||
+      typeof state.updatedMs !== 'number' ||
+      !Number.isFinite(state.tokens) ||
+      !Number.isFinite(state.updatedMs) ||
+      state.tokens < 0 ||
+      state.updatedMs < 0
+    ) {
+      return;
+    }
+    this.buckets.set(key, { ...state });
   }
 
   /**

@@ -12,7 +12,8 @@
  *
  * The suite covers: policy get/set round-trip, intent + decision put/get,
  * pending() listing and expiry, the rolling issue ledger, audit chain
- * append/verify, and hash-chain tamper detection.
+ * append/verify, hash-chain tamper detection, and the rate-limit bucket
+ * seam (set/get/all round-trip).
  */
 import { Pool } from 'pg';
 import { verifyChain, type AuditEntry } from '../src/audit.js';
@@ -116,6 +117,20 @@ async function runSuite(label: string, store: Store) {
   ];
   check('tampered chain detected at seq', verifyChain(tampered) === e2.seq, e2.seq);
 
+  // Rate-limit buckets: set/get/all round-trip (the v0.20.0 persistence seam).
+  await store.ratelimits.set(`${label}-rl-agent`, { tokens: 0.5, updatedMs: 4242 });
+  const rl = await store.ratelimits.get(`${label}-rl-agent`);
+  check('ratelimit bucket set/get round-trips fractional tokens',
+    rl?.tokens === 0.5 && rl?.updatedMs === 4242, rl);
+  check('ratelimit bucket unknown key is undefined',
+    (await store.ratelimits.get(`${label}-rl-nobody`)) === undefined);
+  await store.ratelimits.set(`${label}-rl-agent`, { tokens: 2, updatedMs: 5000 });
+  check('ratelimit bucket set overwrites',
+    (await store.ratelimits.get(`${label}-rl-agent`))?.tokens === 2);
+  const rlAll = await store.ratelimits.all();
+  check('ratelimit buckets all() includes the stored bucket',
+    rlAll.some((b) => b.key === `${label}-rl-agent` && b.state.updatedMs === 5000), rlAll);
+
   await store.close();
 }
 
@@ -135,7 +150,7 @@ async function main() {
       // Wipe the non-policy tables so the suite is isolated from earlier
       // runs (policies keep the seeded default the suite asserts on).
       const admin = new Pool({ connectionString: pgUrl });
-      await admin.query('TRUNCATE intents, decisions, audit_entries, ledger_spend');
+      await admin.query('TRUNCATE intents, decisions, audit_entries, ledger_spend, ratelimit_buckets');
       await admin.end();
       await runSuite('postgres', pgStore);
     } catch (err) {

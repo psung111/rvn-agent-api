@@ -286,6 +286,33 @@ and logs the result in CHANGELOG.md.
     telegram-callback, simulate, reissue, subasset, unique, presets,
     anomaly, store, webhooks, langchain suites still green.
     Remainder: per-kind buckets, buckets persisted in the store.
+  - [x] 2026-11-04 — v0.20.0 rate limiting (slice 3, item partial):
+    buckets persisted in the store. New `TokenBucket.dump()` /
+    `restore()` / `stored()` — dump returns every bucket's fractional
+    balance plus the instant it was last computed, restore replays it
+    (malformed states ignored, never a crash), and refill after a
+    restore runs from the saved timestamp, so a restart neither
+    refills an exhausted bucket nor double-counts refill. New
+    `ratelimits` seam on the `Store` interface (`get` / `set` /
+    `all`): a memory-map backend and a Postgres backend over a new
+    `ratelimit_buckets` table in `schema.sql` (applied idempotently
+    at startup like the rest of the schema; corrupt rows read as
+    absent and are overwritten by the next write). The server
+    restores every saved bucket at boot (a failed restore logs and
+    starts from full buckets, never a startup crash) and writes a
+    bucket back after every gate evaluation — including a failed
+    consume, whose refilled level must not be double-counted — with
+    writes chained in call order so a slow write can never overwrite
+    a newer state with a stale one; a failed write is logged and
+    never fails the submit. Simulate peeks and stats reads still
+    never write. Verified with new persistence checks in
+    `pnpm test:ratelimit` (dump/restore round-trip, refill from the
+    saved timestamp, malformed-restore rejection, memory-seam
+    round-trip) and a ratelimit section in `pnpm test:store`
+    (both backends); demo, mcp-smoke, approvals,
+    telegram-callback, simulate, reissue, subasset, unique, presets,
+    anomaly, store, webhooks, langchain suites still green.
+    Remainder: per-kind buckets.
 
 ## Done
 

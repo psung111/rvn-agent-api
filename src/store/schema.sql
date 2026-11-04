@@ -46,3 +46,15 @@ CREATE TABLE IF NOT EXISTS ledger_spend (
   qty_base_units  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ledger_spend_agent_at ON ledger_spend (agent_id, at_ms);
+
+-- Rate-limit buckets (v0.20.0): one row per agent, holding the token
+-- balance and the instant it was last computed, so a restart resumes the
+-- bucket instead of refilling it. Tokens are fractional (continuous
+-- refill); updated_ms is epoch milliseconds. Rows are upserted on every
+-- gate evaluation and read back in full at boot.
+CREATE TABLE IF NOT EXISTS ratelimit_buckets (
+  key        TEXT PRIMARY KEY,
+  tokens     DOUBLE PRECISION NOT NULL,
+  updated_ms BIGINT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

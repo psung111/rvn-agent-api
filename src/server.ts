@@ -88,9 +88,34 @@ async function main() {
   const policyFor = async (agentId: string): Promise<RvnPolicy> =>
     (await store.policies.get(agentId)) ?? (await store.policies.get('*')) ?? defaultPolicy();
 
-  // Per-agent token buckets for the rate-limit gate (in-memory: a restart
-  // refills every bucket; persisting them in the store is a follow-up).
+  // Per-agent token buckets for the rate-limit gate. Buckets live in
+  // server memory for the gate itself, but are persisted in the store
+  // (v0.20.0): every saved bucket is restored here at boot, and every
+  // gate evaluation writes its bucket back, so a restart resumes an
+  // exhausted bucket instead of refilling it.
   const rateLimiter = new TokenBucket();
+  try {
+    const saved = await store.ratelimits.all();
+    for (const { key, state } of saved) rateLimiter.restore(key, state);
+    app.log.info(`rate limits: restored ${saved.length} bucket(s) from the store`);
+  } catch (err) {
+    // A failed restore must never take the API down: the gate still
+    // enforces limits in memory, starting from full buckets.
+    app.log.warn({ err }, 'rate limits: restore failed, starting with fresh buckets');
+  }
+  // Persist writes are chained in call order so a slow write can never
+  // overwrite a newer bucket state with a stale one. A failed write is
+  // logged and dropped — it never fails the submit that produced it.
+  let persistQueue: Promise<void> = Promise.resolve();
+  const persistBucket = (agentId: string): void => {
+    const state = rateLimiter.stored(agentId);
+    if (!state) return;
+    persistQueue = persistQueue
+      .then(() => store.ratelimits.set(agentId, state))
+      .catch((err) => {
+        app.log.warn({ err, agentId }, 'rate limits: bucket persist failed, limit still enforced in memory');
+      });
+  };
 
   /**
    * Deliver a webhook event for an intent. No-op when no webhook URL is
@@ -254,7 +279,13 @@ async function main() {
     // a DENY decision — audited and webhook-notified like any decision,
     // but nothing executes and no approval hold is created.
     const rateLimit = rateLimitFromPolicy(policy);
-    if (rateLimit && !rateLimiter.tryConsume(intent.agentId, rateLimit, nowMs)) {
+    const gatePassed = !rateLimit || rateLimiter.tryConsume(intent.agentId, rateLimit, nowMs);
+    // Persist after every gate evaluation — including a failed consume,
+    // whose refilled level must not be double-counted after a restart.
+    // Simulate peeks and stats reads never reach this path, so they
+    // never write.
+    if (rateLimit) persistBucket(intent.agentId);
+    if (rateLimit && !gatePassed) {
       const decision: Decision = {
         intentId: intent.id,
         agentId: intent.agentId,

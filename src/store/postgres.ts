@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { Pool } from 'pg';
 import { makeChainedEntry, verifyChain, type AuditEntry, type AuditKind } from '../audit.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
-import type { AuditStore, IntentStore, PolicyStore, Store } from './types.js';
+import type { AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
 
 const SCHEMA_SQL = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 
@@ -133,6 +133,45 @@ class PostgresAuditStore implements AuditStore {
   }
 }
 
+class PostgresRateLimitStore implements RateLimitStore {
+  constructor(private pool: Pool) {}
+  async get(key: string): Promise<RateLimitBucketState | undefined> {
+    const { rows } = await this.pool.query(
+      'SELECT tokens, updated_ms FROM ratelimit_buckets WHERE key = $1',
+      [key],
+    );
+    if (!rows[0]) return undefined;
+    const tokens = Number(rows[0].tokens);
+    const updatedMs = Number(rows[0].updated_ms);
+    // A corrupt row (NaN tokens can be stored in a DOUBLE PRECISION
+    // column) reads as absent: the bucket restores as full rather than
+    // taking the gate down, and the next write overwrites the row.
+    if (!Number.isFinite(tokens) || !Number.isFinite(updatedMs) || tokens < 0 || updatedMs < 0) {
+      return undefined;
+    }
+    return { tokens, updatedMs };
+  }
+  async set(key: string, state: RateLimitBucketState): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO ratelimit_buckets (key, tokens, updated_ms, updated_at) VALUES ($1, $2, $3, now())
+       ON CONFLICT (key) DO UPDATE SET tokens = EXCLUDED.tokens, updated_ms = EXCLUDED.updated_ms, updated_at = now()`,
+      [key, state.tokens, state.updatedMs],
+    );
+  }
+  async all(): Promise<Array<{ key: string; state: RateLimitBucketState }>> {
+    const { rows } = await this.pool.query('SELECT key, tokens, updated_ms FROM ratelimit_buckets');
+    const out: Array<{ key: string; state: RateLimitBucketState }> = [];
+    for (const r of rows) {
+      const tokens = Number(r.tokens);
+      const updatedMs = Number(r.updated_ms);
+      if (Number.isFinite(tokens) && Number.isFinite(updatedMs) && tokens >= 0 && updatedMs >= 0) {
+        out.push({ key: r.key as string, state: { tokens, updatedMs } });
+      }
+    }
+    return out;
+  }
+}
+
 class PostgresLedger implements IssueLedger {
   constructor(private pool: Pool) {}
   async recordIssue(agentId: string, qtyBaseUnits: bigint, atMs: number): Promise<void> {
@@ -159,12 +198,14 @@ export class PostgresStore implements Store {
   readonly intents: IntentStore;
   readonly ledger: IssueLedger;
   readonly audit: AuditStore;
+  readonly ratelimits: RateLimitStore;
 
   private constructor(private pool: Pool) {
     this.policies = new PostgresPolicyStore(pool);
     this.intents = new PostgresIntentStore(pool);
     this.ledger = new PostgresLedger(pool);
     this.audit = new PostgresAuditStore(pool);
+    this.ratelimits = new PostgresRateLimitStore(pool);
   }
 
   /** Connects, applies schema.sql, and smoke-tests the connection. Throws on any failure. */

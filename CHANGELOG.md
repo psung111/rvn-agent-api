@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-11-04 — v0.20.0 (Rate limiting, slice 3 — item partial)
+
+- Rate-limit buckets persisted in the store, so a restart no longer
+  refills an exhausted bucket. `TokenBucket` gains `dump()` (every
+  bucket's fractional balance plus the instant it was last computed),
+  `restore(key, state)` (replays a saved bucket; malformed states —
+  non-finite or negative numbers — are ignored, never stored), and
+  `stored(key)` (a copy of one bucket's live state, for writing
+  back). Refill after a restore runs from the saved timestamp: a
+  bucket saved with 1 token at t=1000 on a 3-op/60s limit still has
+  exactly 2 tokens at t=21000, not a fresh 3. A restored balance
+  above a since-changed capacity is harmless — refill math clamps
+  it on the next evaluation.
+- New `ratelimits` seam on the `Store` interface (`get` / `set` /
+  `all`): a memory-map backend, and a Postgres backend over a new
+  `ratelimit_buckets` table (`key` primary key, fractional `tokens`,
+  `updated_ms` epoch milliseconds) added to `src/store/schema.sql`
+  and applied idempotently at startup like the rest of the schema.
+  Corrupt rows (a NaN can sit in a DOUBLE PRECISION column) read
+  as absent and are overwritten by the next write, so bad data can
+  never take the gate down.
+- Server wiring: every saved bucket is restored at boot (a failed
+  restore logs a warning and starts from full buckets — never a
+  startup crash), and every gate evaluation writes its bucket back,
+  including a failed consume, whose refilled level must not be
+  double-counted after a restart. Persist writes are chained in call
+  order so a slow write can never overwrite a newer state with a
+  stale one, and a failed write is logged and never fails the
+  submit that produced it. Simulate peeks and stats reads still
+  never write. No new REST route or MCP/LangChain tool: the
+  persisted bucket is the same bucket the existing stats endpoint
+  already reports. `initialize` now reports server version 0.20.0
+  (`src/mcp.ts`, `package.json`, `langchain_rvn/pyproject.toml`).
+- `pnpm test:ratelimit` gained persistence checks (dump shape,
+  stored-copy isolation, restore resuming a partially spent bucket,
+  refill from the saved timestamp, malformed-restore rejection,
+  memory-seam set/get/all round-trip) and `pnpm test:store` gained
+  a ratelimit section run against both backends (the Postgres leg
+  runs when a test database is configured; here it ran against the
+  memory backend only, as no local Postgres is available) — all
+  green. `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:webhooks`, `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran
+  the direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content.
+- Remainder of the rate-limiting item: per-kind buckets. The next
+  top item remains rate limiting.
+
 ## 2026-11-03 — v0.19.0 (Rate limiting, slice 2 — item partial)
 
 - Rate-limit stats, read-only by construction. New
