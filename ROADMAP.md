@@ -238,7 +238,7 @@ and logs the result in CHANGELOG.md.
     subasset, unique, presets, anomaly, store, langchain suites still
     green. The webhooks item is complete; the next top item is rate
     limiting.
-- [ ] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension.
+- [x] **Rate limiting** — per-agent operation limits (token bucket) as a policy dimension (item complete).
   - [x] 2026-11-02 — v0.18.0 rate limiting (slice 1, item partial):
     new `src/policy/ratelimit.ts` — `TokenBucket` (continuous refill at
     maxOps/windowSeconds tokens per second, fractional tokens, fresh
@@ -313,6 +313,74 @@ and logs the result in CHANGELOG.md.
     telegram-callback, simulate, reissue, subasset, unique, presets,
     anomaly, store, webhooks, langchain suites still green.
     Remainder: per-kind buckets.
+  - [x] 2026-11-05 — v0.21.0 rate limiting (slice 4, item complete):
+    per-kind buckets. New optional policy field
+    `rateLimitKindLimits` — a map from intent kind
+    (`issue_asset` / `transfer_asset` / `reissue_asset` /
+    `issue_subasset` / `issue_unique`) to `{ maxOps, windowSeconds }`.
+    A kind bucket layers on top of the agent-wide bucket: a submit
+    must pass both, spending a token from each, so an operator can
+    cap the fast, cheap op (transfers) or the supply-creating ops
+    (issues) separately from the agent's total velocity. A 429 from
+    either gate spends from neither bucket (peek-all-then-spend),
+    while an exhausted bucket's refilled level is still recorded so
+    a restart cannot double-count refill. Kind buckets are keyed
+    `${agentId}:${kind}` in the same `TokenBucket`, so they persist
+    through the existing `ratelimits` store seam with no schema
+    change, and `GET /v1/ratelimit/:agentId` reports them under
+    `kinds` (alongside the agent-wide snapshot when one exists;
+    kind-only agents report `limited: true` with no top-level token
+    fields). `simulate` peeks both gates and reports the DENY
+    either would produce, spending nothing. Lenient parsing drops
+    malformed entries per kind (unknown kind, half pair, bad values)
+    so stored policies never crash the gate; PUT and preset
+    overrides validate strictly (unknown kind, half pair, zero /
+    fractional values all 400). MCP `get_ratelimit` / `set_policy`
+    and the LangChain client proxy the route, so no new tools were
+    needed — only description updates. Verified by extending
+    `pnpm test:ratelimit` (now 118 checks: parsing/validation unit
+    checks, kind-key dump/restore, kind-only limits, layered
+    agent-wide + kind limits with the neither-spends proof, per-agent
+    kind isolation, PUT + preset validation, stats-read purity) and
+    a new MCP smoke section (4 checks); demo, mcp-smoke, approvals,
+    telegram-callback, simulate, reissue, subasset, unique, presets,
+    anomaly, store, webhooks, langchain suites still green. The
+    rate-limiting item is complete.
+- [ ] **Anomaly thresholds as policy fields + anomaly stats** — the
+  v0.12.0 follow-up: move the anomaly detector's constants (qty-outlier
+  multiplier, burst window/count, minimum history samples) into policy
+  fields so an operator can tune sensitivity per agent instead of
+  redeploying, and add a read-only stats endpoint reporting per-agent
+  anomaly signals over a recent window (holds raised, by signal) so the
+  hold-not-deny gate is observable.
+- [ ] **Postgres schema migrations** — the v0.7.0 follow-up: replace
+  CREATE-IF-NOT-EXISTS at startup with versioned migrations (a
+  `schema_migrations` table, ordered migration files applied in a
+  transaction, fail-fast with a clear error on a half-applied
+  migration), so the schema can evolve — new columns, indexes, and
+  the audit partitioning below — without hand-editing live databases.
+- [ ] **Audit retention & partitioning** — the v0.7.0 follow-up: as the
+  hash chain grows, partition `audit_entries` by time (monthly
+  partitions) and add a retention policy (archive partitions older
+  than N days to cold storage with a chain-verification proof, then
+  drop them), so verification stays fast and the database stays
+  bounded without breaking the chain's verifiability.
+- [ ] **Ops metrics endpoint** — `GET /v1/metrics` (JSON, no new deps):
+  decision counts by kind and reason code, rate-limit 429s by agent
+  and kind, webhook delivery successes/failures by endpoint, approval
+  hold age (oldest pending), and the store backend — so an operator
+  can monitor the API without scraping the audit log. Read-only and
+  unauthenticated like `/v1/health` (localhost-only bind is the
+  existing posture); keep the payload free of policy internals and
+  secrets.
+- [ ] **Multi-approver quorum for high-value holds** — a second,
+  higher approval threshold in policy: intents above it need N of M
+  distinct approvers instead of one. Telegram buttons count distinct
+  approvers (same approver tapping twice counts once); the HTTP
+  approve route takes an approver identity and reports
+  `approvals: n/N` until quorum is met, then executes. A single
+  approver still suffices below the quorum threshold, so existing
+  flows are unchanged.
 
 ## Done
 

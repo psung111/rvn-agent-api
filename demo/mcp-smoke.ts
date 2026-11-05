@@ -309,6 +309,29 @@ async function main(): Promise<void> {
   check('get_ratelimit via MCP reports limited:false for an unlimited agent',
     rlFree.ok && rlFree.body.limited === false, rlFree.body);
 
+  // 18. per-kind rate-limit stats via MCP (v0.21.0)
+  const rlKindSet = await toolCall('set_policy', {
+    agentId: agent,
+    policy: {
+      ...rlPolicy.body, agentId: agent, allowedDestinations: [walletA],
+      rateLimitKindLimits: { issue_asset: { maxOps: 1, windowSeconds: 3600 } },
+    },
+  });
+  check('set_policy with a per-kind limit via MCP 200s',
+    rlKindSet.ok && rlKindSet.body.httpStatus === 200, rlKindSet.body);
+  const rlKindFresh = await toolCall('get_ratelimit', { agentId: agent });
+  check('get_ratelimit via MCP reports the kind bucket full under `kinds`',
+    rlKindFresh.ok && rlKindFresh.body.limited === true &&
+    rlKindFresh.body.kinds?.issue_asset?.tokensAvailable === 1 &&
+    rlKindFresh.body.kinds?.issue_asset?.wouldAllow === true &&
+    rlKindFresh.body.kinds?.transfer_asset === undefined, rlKindFresh.body);
+  const rlKindIssue = await toolCall('issue_asset', { agentId: agent, name: 'SMOKERLKIND', qty: '500', toAddress: walletA });
+  check('issue via MCP under a per-kind limit ALLOWs once', rlKindIssue.ok && rlKindIssue.body.decision?.kind === 'ALLOW', rlKindIssue.body);
+  const rlKindAfter = await toolCall('get_ratelimit', { agentId: agent });
+  check('get_ratelimit via MCP reports the kind bucket exhausted after one spend',
+    rlKindAfter.ok && rlKindAfter.body.kinds?.issue_asset?.tokensAvailable === 0 &&
+    rlKindAfter.body.kinds?.issue_asset?.wouldAllow === false, rlKindAfter.body);
+
   child.kill();
   shuttingDown = true;
   console.log(process.exitCode ? 'MCP smoke: FAILED' : 'MCP smoke: all green');

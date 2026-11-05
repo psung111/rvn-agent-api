@@ -233,7 +233,7 @@ const TOOLS: ToolDef[] = [
         agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
         policy: {
           type: 'object',
-          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited).',
+          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited) and rateLimitKindLimits (per-kind { maxOps, windowSeconds } buckets, e.g. { issue_asset: { maxOps: 2, windowSeconds: 3600 } }).',
         },
       },
       required: ['policy'],
@@ -271,7 +271,8 @@ const TOOLS: ToolDef[] = [
     description:
       'Read an agent\'s rate-limit stats (GET /v1/ratelimit/:agentId): whether the agent ' +
       'is rate-limited, the whole-token balance, refill rate, and seconds until the next ' +
-      'token and until full. Read-only — checking stats never spends a token, so polling ' +
+      'token and until full, plus per-kind bucket stats under `kinds` when the policy sets ' +
+      'any. Read-only — checking stats never spends a token, so polling ' +
       'it can neither throttle nor un-throttle the agent. Unlimited agents report limited: false.',
     inputSchema: {
       type: 'object',
@@ -530,7 +531,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.20.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.21.0' },
       });
     }
     case 'notifications/initialized':

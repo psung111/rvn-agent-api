@@ -68,6 +68,18 @@ export interface RvnPolicy {
   rateLimitMaxOps?: number;
   /** Window in seconds over which a full rate-limit bucket refills. */
   rateLimitWindowSeconds?: number;
+  /**
+   * Optional per-kind token-bucket rate limits (v0.21.0): a tighter
+   * bucket for one operation kind, layered on top of the agent-wide
+   * bucket when both are set — a submit must pass both, spending a
+   * token from each. Each entry needs both maxOps and windowSeconds,
+   * both positive integers; kinds absent from the map are unlimited
+   * at the kind level, so older policies without this field keep
+   * working unchanged.
+   */
+  rateLimitKindLimits?: Partial<
+    Record<IntentKind, { maxOps: number; windowSeconds: number }>
+  >;
 }
 
 export interface Decision {

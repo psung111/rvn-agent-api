@@ -1,5 +1,8 @@
 import type { RvnPolicy } from './types.js';
-import { validateRateLimitFields } from './ratelimit.js';
+import {
+  validateRateLimitFields,
+  validateRateLimitKindFields,
+} from './ratelimit.js';
 
 /**
  * Policy preset gallery. A preset is a named, opinionated starting policy;
@@ -146,9 +149,16 @@ export function applyPreset(
       if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
         throw new Error(`override '${key}' must be a positive integer`);
       }
+    } else if (key === 'rateLimitKindLimits') {
+      // Deep-check the map here so the error names the offending kind;
+      // the merged-policy check below is the backstop.
+      const kindError = validateRateLimitKindFields({ rateLimitKindLimits: value } as Partial<RvnPolicy>);
+      if (kindError) {
+        throw new Error(`override 'rateLimitKindLimits': ${kindError}`);
+      }
     } else {
       throw new Error(
-        `unknown override field: '${key}' (overridable: ${[...OVERRIDABLE_QTY_FIELDS, ...OVERRIDABLE_LIST_FIELDS, 'assetNamePattern', 'decisionTtlSeconds', 'rateLimitMaxOps', 'rateLimitWindowSeconds'].join(', ')})`,
+        `unknown override field: '${key}' (overridable: ${[...OVERRIDABLE_QTY_FIELDS, ...OVERRIDABLE_LIST_FIELDS, 'assetNamePattern', 'decisionTtlSeconds', 'rateLimitMaxOps', 'rateLimitWindowSeconds', 'rateLimitKindLimits'].join(', ')})`,
       );
     }
     merged[key] = value;
@@ -159,6 +169,10 @@ export function applyPreset(
   const rateLimitError = validateRateLimitFields(merged as Partial<RvnPolicy>);
   if (rateLimitError) {
     throw new Error(rateLimitError);
+  }
+  const kindLimitError = validateRateLimitKindFields(merged as Partial<RvnPolicy>);
+  if (kindLimitError) {
+    throw new Error(kindLimitError);
   }
   return merged as unknown as RvnPolicy;
 }

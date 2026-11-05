@@ -29,6 +29,12 @@
  *     a full valid pair 200s and reads back
  *   - preset overrides: a full rate-limit override applies, a half
  *     override 400s
+ *   - per-kind buckets (v0.21.0): lenient/strict parsing of
+ *     rateLimitKindLimits, dump/restore of a kind key, a kind-only limit
+ *     (issues capped, transfers free, simulate peeks per kind, stats
+ *     under `kinds`), layered agent-wide + kind limits (a 429 spends
+ *     from neither bucket), per-agent kind isolation, PUT and preset
+ *     validation for kind maps, and stats-read purity for kind buckets
  *   - the audit chain stays valid
  *
  * Nothing touches the network: the API is localhost-only.
@@ -37,8 +43,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import {
   rateLimitFromPolicy,
+  rateLimitKindKey,
+  rateLimitsPerKindFromPolicy,
   TokenBucket,
   validateRateLimitFields,
+  validateRateLimitKindFields,
 } from '../src/policy/ratelimit.js';
 import { defaultPolicy } from '../src/policy/index.js';
 import { MemoryStore } from '../src/store/memory.js';
@@ -210,6 +219,88 @@ async function main(): Promise<void> {
   check('validateRateLimitFields: full valid pair passes',
     validateRateLimitFields({ rateLimitMaxOps: 5, rateLimitWindowSeconds: 60 }) === undefined);
 
+  // ---- Unit: per-kind limits (v0.21.0) ----
+  check('rateLimitKindKey joins agent and kind with a colon',
+    rateLimitKindKey('agent-9', 'issue_asset') === 'agent-9:issue_asset');
+  const kindPolicy = {
+    ...defaultPolicy(),
+    rateLimitKindLimits: {
+      issue_asset: { maxOps: 2, windowSeconds: 60 },
+      transfer_asset: { maxOps: 5, windowSeconds: 300 },
+    },
+  };
+  check('rateLimitsPerKindFromPolicy: a valid two-kind map parses',
+    JSON.stringify(rateLimitsPerKindFromPolicy(kindPolicy)) ===
+      JSON.stringify({
+        issue_asset: { maxOps: 2, windowSeconds: 60 },
+        transfer_asset: { maxOps: 5, windowSeconds: 300 },
+      }), rateLimitsPerKindFromPolicy(kindPolicy));
+  check('rateLimitsPerKindFromPolicy: missing map means no kind limits',
+    JSON.stringify(rateLimitsPerKindFromPolicy(defaultPolicy())) === JSON.stringify({}));
+  check('rateLimitsPerKindFromPolicy: an unknown kind is dropped',
+    JSON.stringify(rateLimitsPerKindFromPolicy({
+      ...defaultPolicy(),
+      rateLimitKindLimits: { issue_asset: { maxOps: 2, windowSeconds: 60 }, teleport_asset: { maxOps: 1, windowSeconds: 60 } } as never,
+    })) === JSON.stringify({ issue_asset: { maxOps: 2, windowSeconds: 60 } }));
+  check('rateLimitsPerKindFromPolicy: a half pair is dropped, the valid kind kept',
+    JSON.stringify(rateLimitsPerKindFromPolicy({
+      ...defaultPolicy(),
+      rateLimitKindLimits: { issue_asset: { maxOps: 2 }, transfer_asset: { maxOps: 5, windowSeconds: 300 } } as never,
+    })) === JSON.stringify({ transfer_asset: { maxOps: 5, windowSeconds: 300 } }));
+  check('rateLimitsPerKindFromPolicy: zero / fractional values are dropped',
+    JSON.stringify(rateLimitsPerKindFromPolicy({
+      ...defaultPolicy(),
+      rateLimitKindLimits: {
+        issue_asset: { maxOps: 0, windowSeconds: 60 },
+        transfer_asset: { maxOps: 2.5, windowSeconds: 60 },
+        reissue_asset: { maxOps: 3, windowSeconds: 60 },
+      },
+    })) === JSON.stringify({ reissue_asset: { maxOps: 3, windowSeconds: 60 } }));
+  check('rateLimitsPerKindFromPolicy: a non-object entry is dropped',
+    JSON.stringify(rateLimitsPerKindFromPolicy({
+      ...defaultPolicy(),
+      rateLimitKindLimits: { issue_asset: 'fast' as never, transfer_asset: { maxOps: 5, windowSeconds: 300 } },
+    })) === JSON.stringify({ transfer_asset: { maxOps: 5, windowSeconds: 300 } }));
+  check('validateRateLimitKindFields: undefined is valid',
+    validateRateLimitKindFields({}) === undefined);
+  check('validateRateLimitKindFields: a valid map passes',
+    validateRateLimitKindFields({
+      rateLimitKindLimits: { issue_asset: { maxOps: 2, windowSeconds: 60 } },
+    }) === undefined);
+  check('validateRateLimitKindFields: an unknown kind is invalid',
+    typeof validateRateLimitKindFields({
+      rateLimitKindLimits: { teleport_asset: { maxOps: 1, windowSeconds: 60 } } as never,
+    }) === 'string');
+  check('validateRateLimitKindFields: a half pair is invalid',
+    typeof validateRateLimitKindFields({
+      rateLimitKindLimits: { issue_asset: { maxOps: 2 } } as never,
+    }) === 'string');
+  check('validateRateLimitKindFields: zero / fractional values are invalid',
+    typeof validateRateLimitKindFields({
+      rateLimitKindLimits: { issue_asset: { maxOps: 0, windowSeconds: 60 } },
+    }) === 'string' &&
+    typeof validateRateLimitKindFields({
+      rateLimitKindLimits: { issue_asset: { maxOps: 2, windowSeconds: 1.5 } },
+    }) === 'string');
+  check('validateRateLimitKindFields: a non-object map is invalid',
+    typeof validateRateLimitKindFields({ rateLimitKindLimits: [] as never }) === 'string');
+  check('validateRateLimitKindFields: a non-object entry is invalid',
+    typeof validateRateLimitKindFields({
+      rateLimitKindLimits: { issue_asset: 'fast' as never },
+    }) === 'string');
+  const kindPersist = new TokenBucket();
+  kindPersist.tryConsume('kind-agent:issue_asset', { maxOps: 2, windowSeconds: 60 }, 1000);
+  const kindDumped = kindPersist.dump();
+  check('dump/restore round-trips a per-kind bucket key',
+    kindDumped.length === 1 && kindDumped[0].key === 'kind-agent:issue_asset' &&
+    kindDumped[0].state.tokens === 1, kindDumped);
+  const kindRestored = new TokenBucket();
+  for (const { key, state } of kindDumped) kindRestored.restore(key, state);
+  check('a restored kind bucket resumes its balance and stays isolated from the bare agent key',
+    kindRestored.tryConsume('kind-agent:issue_asset', { maxOps: 2, windowSeconds: 60 }, 1000) === true &&
+    kindRestored.tryConsume('kind-agent:issue_asset', { maxOps: 2, windowSeconds: 60 }, 1000) === false &&
+    kindRestored.wouldAllow('kind-agent', { maxOps: 2, windowSeconds: 60 }, 1000) === true);
+
   // ---- Integration ----
   const api = await bootApi();
   try {
@@ -367,6 +458,134 @@ async function main(): Promise<void> {
       afterOne.json?.tokensAvailable === 1 && afterOne.json?.wouldAllow === true, afterOne.json);
     check('stats for an unknown agent (default policy, unlimited) report limited: false',
       (await get('/v1/ratelimit/rl-never-seen')).json?.limited === false);
+
+    // ---- I. per-kind bucket only (v0.21.0): issues capped, transfers free ----
+    const transfer = (agent: string, name: string, qty = '10') =>
+      post('/v1/assets/transfer', { agentId: agent, assetName: name, qty, destination: wallet });
+    check('policy set for rl-kind (2 issues / 3600s, no agent-wide limit)',
+      (await setPolicy('rl-kind', {
+        rateLimitKindLimits: { issue_asset: { maxOps: 2, windowSeconds: 3600 } },
+      })).status === 200);
+    check('rl-kind issue 1 ALLOWs', (await issue('rl-kind', 'RLK1')).status === 200);
+    check('rl-kind issue 2 ALLOWs', (await issue('rl-kind', 'RLK2')).status === 200);
+    const kindLimited = await issue('rl-kind', 'RLK3');
+    check('rl-kind issue 3 429s on the kind bucket',
+      kindLimited.status === 429 &&
+      kindLimited.json?.decision?.reasonCodes?.includes('RATE_LIMIT_EXCEEDED'), kindLimited);
+    const kindTransfer = await transfer('rl-kind', 'RLK1');
+    check('rl-kind transfer still ALLOWs (no transfer kind limit, no agent limit)',
+      kindTransfer.status === 200 && kindTransfer.json?.decision?.kind === 'ALLOW', kindTransfer);
+    const kindSimIssue = await post('/v1/intents/simulate', {
+      op: 'issue', agentId: 'rl-kind', assetName: 'RLK9', qty: '100', destination: wallet,
+    });
+    check('simulate issue on an exhausted kind bucket reports DENY / RATE_LIMIT_EXCEEDED',
+      kindSimIssue.status === 200 && kindSimIssue.json?.decision?.kind === 'DENY' &&
+      kindSimIssue.json?.decision?.reasonCodes?.includes('RATE_LIMIT_EXCEEDED'), kindSimIssue);
+    const kindSimTransfer = await post('/v1/intents/simulate', {
+      op: 'transfer', agentId: 'rl-kind', assetName: 'RLK1', qty: '10', destination: wallet,
+    });
+    check('simulate transfer on the same agent still ALLOWs (kind buckets are per-kind)',
+      kindSimTransfer.status === 200 && kindSimTransfer.json?.decision?.kind === 'ALLOW', kindSimTransfer);
+    const kindStats = await get('/v1/ratelimit/rl-kind');
+    check('stats for a kind-only agent: limited, no agent-wide fields, kinds.issue_asset exhausted',
+      kindStats.json?.limited === true && kindStats.json?.maxOps === undefined &&
+      kindStats.json?.kinds?.issue_asset?.tokensAvailable === 0 &&
+      kindStats.json?.kinds?.issue_asset?.wouldAllow === false &&
+      kindStats.json?.kinds?.issue_asset?.maxOps === 2 &&
+      kindStats.json?.kinds?.transfer_asset === undefined, kindStats.json);
+
+    // ---- J. layered limits: agent-wide bucket plus a kind bucket ----
+    check('policy set for rl-layer (4 ops agent-wide + 2 issues / 3600s)',
+      (await setPolicy('rl-layer', {
+        rateLimitMaxOps: 4, rateLimitWindowSeconds: 3600,
+        rateLimitKindLimits: { issue_asset: { maxOps: 2, windowSeconds: 3600 } },
+      })).status === 200);
+    check('rl-layer issue 1 ALLOWs', (await issue('rl-layer', 'RLL1')).status === 200);
+    check('rl-layer issue 2 ALLOWs', (await issue('rl-layer', 'RLL2')).status === 200);
+    check('rl-layer issue 3 429s (kind bucket exhausted, agent bucket still has 2)',
+      (await issue('rl-layer', 'RLL3')).status === 429);
+    const layerT1 = await transfer('rl-layer', 'RLL1');
+    check('rl-layer transfer 1 ALLOWs (agent bucket 2 -> 1)',
+      layerT1.status === 200 && layerT1.json?.decision?.kind === 'ALLOW', layerT1);
+    const layerT2 = await transfer('rl-layer', 'RLL1');
+    check('rl-layer transfer 2 ALLOWs (agent bucket 1 -> 0)',
+      layerT2.status === 200 && layerT2.json?.decision?.kind === 'ALLOW', layerT2);
+    check('rl-layer transfer 3 429s (agent bucket now exhausted too)',
+      (await transfer('rl-layer', 'RLL1')).status === 429);
+    const layerStats = await get('/v1/ratelimit/rl-layer');
+    check('layered stats: agent bucket 0 tokens and kinds.issue_asset 0 tokens',
+      layerStats.json?.limited === true && layerStats.json?.tokensAvailable === 0 &&
+      layerStats.json?.wouldAllow === false &&
+      layerStats.json?.kinds?.issue_asset?.tokensAvailable === 0 &&
+      layerStats.json?.kinds?.issue_asset?.wouldAllow === false, layerStats.json);
+
+    // ---- K. kind buckets are per-agent ----
+    check('policy set for rl-kind-b (1 issue / 3600s)',
+      (await setPolicy('rl-kind-b', {
+        rateLimitKindLimits: { issue_asset: { maxOps: 1, windowSeconds: 3600 } },
+      })).status === 200);
+    check('rl-kind-b issue 1 ALLOWs', (await issue('rl-kind-b', 'RLKB1')).status === 200);
+    check('rl-kind-b issue 2 429s', (await issue('rl-kind-b', 'RLKB2')).status === 429);
+    check('policy set for rl-kind-c (same 1-issue limit, different agent)',
+      (await setPolicy('rl-kind-c', {
+        rateLimitKindLimits: { issue_asset: { maxOps: 1, windowSeconds: 3600 } },
+      })).status === 200);
+    check('rl-kind-c issue ALLOWs (its own kind bucket is fresh)',
+      (await issue('rl-kind-c', 'RLKC1')).status === 200);
+
+    // ---- L. PUT validation for kind limits ----
+    const baseKind = await get('/v1/policies/rl-kind-put');
+    check('PUT with an unknown kind 400s',
+      (await put('/v1/policies/rl-kind-put', {
+        ...baseKind.json, agentId: 'rl-kind-put',
+        rateLimitKindLimits: { teleport_asset: { maxOps: 1, windowSeconds: 60 } },
+      })).status === 400);
+    check('PUT with a half pair for a kind 400s',
+      (await put('/v1/policies/rl-kind-put', {
+        ...baseKind.json, agentId: 'rl-kind-put',
+        rateLimitKindLimits: { issue_asset: { maxOps: 2 } },
+      })).status === 400);
+    check('PUT with a fractional kind window 400s',
+      (await put('/v1/policies/rl-kind-put', {
+        ...baseKind.json, agentId: 'rl-kind-put',
+        rateLimitKindLimits: { issue_asset: { maxOps: 2, windowSeconds: 1.5 } },
+      })).status === 400);
+    const kindPutOk = await put('/v1/policies/rl-kind-put', {
+      ...baseKind.json, agentId: 'rl-kind-put',
+      rateLimitKindLimits: { issue_asset: { maxOps: 2, windowSeconds: 60 } },
+    });
+    check('PUT with a valid kind map 200s and reads back',
+      kindPutOk.status === 200 &&
+      (await get('/v1/policies/rl-kind-put')).json?.rateLimitKindLimits?.issue_asset?.maxOps === 2, kindPutOk);
+
+    // ---- M. preset overrides with kind limits ----
+    const kindPresetOk = await post('/v1/policies/rl-kind-preset/preset', {
+      preset: 'balanced',
+      overrides: {
+        allowedDestinations: [wallet],
+        rateLimitKindLimits: { transfer_asset: { maxOps: 1, windowSeconds: 3600 } },
+      },
+    });
+    check('preset apply with a valid kind-limit override 200s',
+      kindPresetOk.status === 200 &&
+      kindPresetOk.json?.policy?.rateLimitKindLimits?.transfer_asset?.maxOps === 1, kindPresetOk);
+    const kindPresetBad = await post('/v1/policies/rl-kind-preset/preset', {
+      preset: 'balanced',
+      overrides: { rateLimitKindLimits: { teleport_asset: { maxOps: 1, windowSeconds: 60 } } },
+    });
+    check('preset apply with an unknown kind 400s', kindPresetBad.status === 400, kindPresetBad);
+    const kindPresetHalf = await post('/v1/policies/rl-kind-preset/preset', {
+      preset: 'balanced',
+      overrides: { rateLimitKindLimits: { issue_asset: { maxOps: 2 } } },
+    });
+    check('preset apply with a half kind pair 400s', kindPresetHalf.status === 400, kindPresetHalf);
+
+    // ---- N. stats reads never un-throttle a kind bucket ----
+    check('reading kind stats twice leaves the bucket exhausted',
+      (await get('/v1/ratelimit/rl-kind')).json?.kinds?.issue_asset?.tokensAvailable === 0 &&
+      (await get('/v1/ratelimit/rl-kind')).json?.kinds?.issue_asset?.tokensAvailable === 0);
+    check('rl-kind issue still 429s after stats reads',
+      (await issue('rl-kind', 'RLK4')).status === 429);
 
     // ---- Audit chain still valid ----
     const audit = await get('/v1/audit?limit=200');

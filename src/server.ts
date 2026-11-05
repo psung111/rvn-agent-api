@@ -9,9 +9,13 @@ import {
   isExpired,
   POLICY_PRESETS,
   rateLimitFromPolicy,
+  rateLimitKindKey,
+  rateLimitsPerKindFromPolicy,
   TokenBucket,
   validateRateLimitFields,
+  validateRateLimitKindFields,
   type Decision,
+  type RateLimitConfig,
   type RvnIntent,
   type RvnPolicy,
 } from './policy/index.js';
@@ -106,15 +110,58 @@ async function main() {
   // Persist writes are chained in call order so a slow write can never
   // overwrite a newer bucket state with a stale one. A failed write is
   // logged and dropped — it never fails the submit that produced it.
+  // Keys are opaque: a bare agent id for the agent-wide bucket, and
+  // `${agentId}:${kind}` for a per-kind bucket (v0.21.0).
   let persistQueue: Promise<void> = Promise.resolve();
-  const persistBucket = (agentId: string): void => {
-    const state = rateLimiter.stored(agentId);
+  const persistBucket = (key: string): void => {
+    const state = rateLimiter.stored(key);
     if (!state) return;
     persistQueue = persistQueue
-      .then(() => store.ratelimits.set(agentId, state))
+      .then(() => store.ratelimits.set(key, state))
       .catch((err) => {
-        app.log.warn({ err, agentId }, 'rate limits: bucket persist failed, limit still enforced in memory');
+        app.log.warn({ err, key }, 'rate limits: bucket persist failed, limit still enforced in memory');
       });
+  };
+
+  /**
+   * The rate-limit gates for one submit: the agent-wide bucket (when the
+   * policy sets the pair) plus the per-kind bucket for this intent's kind
+   * (when the policy sets one). Every gate is peeked first; tokens are
+   * spent from all of them only when every one allows, so a 429 spends
+   * from neither bucket. An exhausted gate's refilled level is still
+   * recorded (tryConsume stores it on failure), so a restart cannot
+   * double-count the same elapsed refill — the same stance as the
+   * single-bucket gate. Returns true when the submit may proceed.
+   */
+  const rateLimitGate = (agentId: string, kind: RvnIntent['kind'], policy: RvnPolicy, nowMs: number): boolean => {
+    const gates: Array<{ key: string; config: RateLimitConfig }> = [];
+    const agentLimit = rateLimitFromPolicy(policy);
+    if (agentLimit) gates.push({ key: agentId, config: agentLimit });
+    const kindLimit = rateLimitsPerKindFromPolicy(policy)[kind];
+    if (kindLimit) gates.push({ key: rateLimitKindKey(agentId, kind), config: kindLimit });
+    const allows = gates.map((g) => rateLimiter.wouldAllow(g.key, g.config, nowMs));
+    const passed = allows.every(Boolean);
+    gates.forEach((g, i) => {
+      // Spend when every gate allows; when any gate fails, record the
+      // refilled level of the exhausted ones and spend from none.
+      if (passed || !allows[i]) rateLimiter.tryConsume(g.key, g.config, nowMs);
+      persistBucket(g.key);
+    });
+    return passed;
+  };
+
+  /**
+   * The same gates as rateLimitGate, peeked only: true when a submit of
+   * this kind right now would find a whole token in every configured
+   * bucket. Used by simulate, which must report the DENY without
+   * spending a token from any bucket.
+   */
+  const rateLimitWouldAllow = (agentId: string, kind: RvnIntent['kind'], policy: RvnPolicy, nowMs: number): boolean => {
+    const agentLimit = rateLimitFromPolicy(policy);
+    if (agentLimit && !rateLimiter.wouldAllow(agentId, agentLimit, nowMs)) return false;
+    const kindLimit = rateLimitsPerKindFromPolicy(policy)[kind];
+    if (kindLimit && !rateLimiter.wouldAllow(rateLimitKindKey(agentId, kind), kindLimit, nowMs)) return false;
+    return true;
   };
 
   /**
@@ -277,15 +324,11 @@ async function main() {
     // submit (even one the policy engine would deny, so a flood of denied
     // attempts still throttles), and an exhausted bucket answers 429 with
     // a DENY decision — audited and webhook-notified like any decision,
-    // but nothing executes and no approval hold is created.
-    const rateLimit = rateLimitFromPolicy(policy);
-    const gatePassed = !rateLimit || rateLimiter.tryConsume(intent.agentId, rateLimit, nowMs);
-    // Persist after every gate evaluation — including a failed consume,
-    // whose refilled level must not be double-counted after a restart.
-    // Simulate peeks and stats reads never reach this path, so they
-    // never write.
-    if (rateLimit) persistBucket(intent.agentId);
-    if (rateLimit && !gatePassed) {
+    // but nothing executes and no approval hold is created. The gate
+    // covers the agent-wide bucket plus the per-kind bucket for this
+    // intent's kind (v0.21.0); a 429 spends from neither.
+    const gatePassed = rateLimitGate(intent.agentId, intent.kind, policy, nowMs);
+    if (!gatePassed) {
       const decision: Decision = {
         intentId: intent.id,
         agentId: intent.agentId,
@@ -639,8 +682,7 @@ async function main() {
     // would get from an exhausted bucket without spending a token.
     const simPolicy = await policyFor(intent.agentId);
     const simNow = Date.now();
-    const simRateLimit = rateLimitFromPolicy(simPolicy);
-    if (simRateLimit && !rateLimiter.wouldAllow(intent.agentId, simRateLimit, simNow)) {
+    if (!rateLimitWouldAllow(intent.agentId, intent.kind, simPolicy, simNow)) {
       return {
         simulated: true,
         decision: {
@@ -748,14 +790,22 @@ async function main() {
    * a token and never advances the bucket's clock, so polling it can
    * neither throttle nor un-throttle the agent). Agents without a
    * rate-limit pair report { limited: false }; a fresh limited agent
-   * reports a full bucket.
+   * reports a full bucket. Per-kind buckets (v0.21.0) are reported under
+   * `kinds`, keyed by intent kind, for every kind the policy limits —
+   * including when there is no agent-wide bucket at all.
    */
   app.get('/v1/ratelimit/:agentId', async (req) => {
     const { agentId } = req.params as { agentId: string };
     const policy = await policyFor(agentId);
     const config = rateLimitFromPolicy(policy);
-    if (!config) return { agentId, limited: false };
-    return { agentId, limited: true, ...rateLimiter.snapshot(agentId, config) };
+    const kindLimits = rateLimitsPerKindFromPolicy(policy);
+    const kinds: Record<string, ReturnType<TokenBucket['snapshot']>> = {};
+    for (const [kind, kindConfig] of Object.entries(kindLimits)) {
+      kinds[kind] = rateLimiter.snapshot(rateLimitKindKey(agentId, kind as RvnIntent['kind']), kindConfig);
+    }
+    if (!config && Object.keys(kinds).length === 0) return { agentId, limited: false, kinds };
+    if (!config) return { agentId, limited: true, kinds };
+    return { agentId, limited: true, ...rateLimiter.snapshot(agentId, config), kinds };
   });
 
   app.get('/v1/audit', async (req) => {
@@ -829,6 +879,10 @@ async function main() {
     const rateLimitError = validateRateLimitFields(b);
     if (rateLimitError) {
       return reply.code(400).send({ error: rateLimitError });
+    }
+    const kindLimitError = validateRateLimitKindFields(b);
+    if (kindLimitError) {
+      return reply.code(400).send({ error: kindLimitError });
     }
     await store.policies.set(b as RvnPolicy);
     await store.audit.append('DECISION', 'policy-update', agentId, { kind: 'POLICY_REPLACED' });

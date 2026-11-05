@@ -1,5 +1,73 @@
 # Changelog
 
+## 2026-11-05 — v0.21.0 (Rate limiting, slice 4 — item complete)
+
+- Per-kind rate-limit buckets, layered on top of the agent-wide bucket.
+  New optional policy field `rateLimitKindLimits`: a map from intent
+  kind (`issue_asset`, `transfer_asset`, `reissue_asset`,
+  `issue_subasset`, `issue_unique`) to `{ maxOps, windowSeconds }`.
+  A submit must pass both its agent-wide bucket (when the policy sets
+  the pair) and its kind bucket (when the policy sets one for that
+  kind), spending a token from each — so an operator can cap the fast,
+  cheap op (transfers) or the supply-creating ops (issues) separately
+  from the agent's total velocity. A 429 from either gate spends from
+  neither bucket: the server peeks every configured gate first and
+  only then consumes, so a kind-limit 429 never burns an agent-wide
+  token (and vice versa); an exhausted bucket's refilled level is
+  still recorded, exactly as the single-bucket gate already did, so a
+  restart cannot double-count refill.
+- Kind buckets are keyed `${agentId}:${kind}` in the same `TokenBucket`,
+  so they persist through the existing `ratelimits` store seam with no
+  schema change — restored at boot, written back after every gate
+  evaluation, chained in call order like the agent-wide buckets.
+  `GET /v1/ratelimit/:agentId` reports per-kind snapshots under
+  `kinds` for every kind the policy limits (alongside the agent-wide
+  snapshot when one exists; kind-only agents report `limited: true`
+  with no top-level token fields, and unlimited agents still report
+  `{ limited: false, kinds: {} }`). `POST /v1/intents/simulate`
+  peeks both gates and reports the DENY either would produce, spending
+  nothing. No new REST route or MCP/LangChain tool: the kind buckets
+  ride the existing submit, simulate, and stats routes, and the MCP
+  `get_ratelimit` / `set_policy` descriptions now name the field.
+- Parsing follows the established lenient/strict split:
+  `rateLimitsPerKindFromPolicy()` drops malformed entries per kind
+  (unknown kind, half pair, non-positive or non-integer values) so a
+  bad stored policy degrades to unlimited for that kind, never a
+  crash; `validateRateLimitKindFields()` rejects the same cases
+  strictly for PUT `/v1/policies/:agentId` and for preset overrides
+  (unknown kind, half pair, zero/fractional values all 400), and
+  `applyPreset` accepts `rateLimitKindLimits` as an override field
+  with the same per-kind error messages.
+- `pnpm test:ratelimit` extended to 118 checks: kind-key format,
+  lenient parse (valid map, unknown kind, half pair, zero/fractional,
+  non-object entry dropped), strict validation (all rejection paths),
+  kind-key dump/restore round-trip with isolation from the bare agent
+  key, plus integration — kind-only limits (2 issues then 429 while
+  transfers still ALLOW, simulate issue DENY / transfer ALLOW, stats
+  under `kinds`), layered limits (4 ops agent-wide + 2 issues: third
+  issue 429s while the agent bucket still has 2, transfers then drain
+  it to a 429, stats show both buckets at 0), per-agent kind
+  isolation, PUT and preset validation for kind maps, stats-read
+  purity for kind buckets — all green. `demo/mcp-smoke.ts` gained a
+  per-kind section (4 checks: set_policy with a kind limit, `kinds`
+  full, issue ALLOWs once, kind bucket exhausted). `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:webhooks`, `pnpm test:langchain` still green.
+  `initialize` now reports server version 0.21.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`).
+- Environment note: no `pnpm` binary on this VM — verification ran
+  the direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content.
+- The rate-limiting roadmap item is complete; the next top items are
+  the five newly appended backlog items (anomaly thresholds as policy
+  fields + stats, Postgres schema migrations, audit retention &
+  partitioning, ops metrics endpoint, multi-approver quorum).
+
 ## 2026-11-04 — v0.20.0 (Rate limiting, slice 3 — item partial)
 
 - Rate-limit buckets persisted in the store, so a restart no longer

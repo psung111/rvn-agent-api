@@ -1,8 +1,9 @@
-import type { RvnPolicy } from './types.js';
+import type { IntentKind, RvnPolicy } from './types.js';
 
 /**
- * Rate limiting (v0.18.0 slice 1, v0.19.0 slice 2): per-agent
- * token-bucket operation limits as a policy dimension.
+ * Rate limiting (v0.18.0 slice 1, v0.19.0 slice 2, v0.20.0 slice 3,
+ * v0.21.0 slice 4): per-agent token-bucket operation limits as a policy
+ * dimension.
  *
  * A policy opts in by setting BOTH fields; either one missing (or
  * invalid) means unlimited, so every pre-existing policy keeps working
@@ -18,8 +19,21 @@ import type { RvnPolicy } from './types.js';
  *
  * Slice 1 scope: one bucket per agent, shared across all operation kinds
  * (issue / reissue / sub-asset / unique / transfer) — the limit is on how
- * fast an agent submits, not on any single kind. Per-kind buckets are a
- * follow-up.
+ * fast an agent submits, not on any single kind.
+ *
+ * Slice 4 adds per-kind buckets: `rateLimitKindLimits` maps an intent
+ * kind to its own { maxOps, windowSeconds }. A kind bucket layers on top
+ * of the agent-wide bucket — a submit must pass both, spending a token
+ * from each — so an operator can cap the fast, cheap op (transfers) or
+ * the supply-creating ops (issues) separately from the agent's total
+ * velocity. A kind bucket is keyed `${agentId}:${kind}` in the same
+ * TokenBucket, so it persists through the same store seam (v0.20.0)
+ * with no schema change, and the stats endpoint reports it under
+ * `kinds`. A submit that fails either gate spends from neither bucket,
+ * so a kind-limit 429 never burns an agent-wide token (and vice versa);
+ * the refilled level of an exhausted bucket is still recorded, exactly
+ * as the single-bucket gate already did, so a restart cannot
+ * double-count refill.
  *
  * Slice 3 persists buckets in the store (see src/store/types.ts): the
  * server restores every saved bucket at boot and writes a bucket back
@@ -49,6 +63,90 @@ import type { RvnPolicy } from './types.js';
 export interface RateLimitConfig {
   maxOps: number;
   windowSeconds: number;
+}
+
+/** Every intent kind a per-kind bucket may be configured for. */
+export const KNOWN_RATE_LIMIT_KINDS: readonly IntentKind[] = [
+  'issue_asset',
+  'transfer_asset',
+  'reissue_asset',
+  'issue_subasset',
+  'issue_unique',
+];
+
+/**
+ * Store / TokenBucket key for one kind bucket. Agent ids never contain
+ * ':', and intent kinds never do either, so `${agentId}:${kind}` cannot
+ * collide with a bare agent key or with another kind's bucket.
+ */
+export function rateLimitKindKey(agentId: string, kind: IntentKind): string {
+  return `${agentId}:${kind}`;
+}
+
+/**
+ * Lenient parse of the per-kind limits for stored policies: returns only
+ * the valid entries — unknown kinds, non-object entries, half pairs,
+ * and non-positive / non-integer values are skipped, so a malformed
+ * entry degrades to unlimited for that kind, never a crash.
+ */
+export function rateLimitsPerKindFromPolicy(
+  policy: RvnPolicy,
+): Partial<Record<IntentKind, RateLimitConfig>> {
+  const raw = policy.rateLimitKindLimits;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Partial<Record<IntentKind, RateLimitConfig>> = {};
+  for (const [kind, cfg] of Object.entries(raw)) {
+    if (!(KNOWN_RATE_LIMIT_KINDS as readonly string[]).includes(kind)) continue;
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) continue;
+    const { maxOps, windowSeconds } = cfg as Partial<RateLimitConfig>;
+    if (
+      typeof maxOps !== 'number' ||
+      typeof windowSeconds !== 'number' ||
+      !Number.isInteger(maxOps) ||
+      !Number.isInteger(windowSeconds) ||
+      maxOps <= 0 ||
+      windowSeconds <= 0
+    ) {
+      continue;
+    }
+    out[kind as IntentKind] = { maxOps, windowSeconds };
+  }
+  return out;
+}
+
+/**
+ * Strict validation for PUT / preset-override writes: returns an error
+ * string, or undefined when valid. The map itself must be an object;
+ * every key must be a known intent kind, and every entry must carry
+ * both maxOps and windowSeconds as positive integers.
+ */
+export function validateRateLimitKindFields(
+  policy: Partial<Pick<RvnPolicy, 'rateLimitKindLimits'>>,
+): string | undefined {
+  const raw = policy.rateLimitKindLimits;
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return 'rateLimitKindLimits must be an object mapping intent kind to { maxOps, windowSeconds }';
+  }
+  for (const [kind, cfg] of Object.entries(raw)) {
+    if (!(KNOWN_RATE_LIMIT_KINDS as readonly string[]).includes(kind)) {
+      return `rateLimitKindLimits has unknown kind '${kind}' (known: ${KNOWN_RATE_LIMIT_KINDS.join(', ')})`;
+    }
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+      return `rateLimitKindLimits['${kind}'] must be an object with maxOps and windowSeconds`;
+    }
+    const { maxOps, windowSeconds } = cfg as Partial<RateLimitConfig>;
+    if (maxOps === undefined || windowSeconds === undefined) {
+      return `rateLimitKindLimits['${kind}'] must set both maxOps and windowSeconds`;
+    }
+    if (typeof maxOps !== 'number' || !Number.isInteger(maxOps) || maxOps <= 0) {
+      return `rateLimitKindLimits['${kind}'].maxOps must be a positive integer`;
+    }
+    if (typeof windowSeconds !== 'number' || !Number.isInteger(windowSeconds) || windowSeconds <= 0) {
+      return `rateLimitKindLimits['${kind}'].windowSeconds must be a positive integer`;
+    }
+  }
+  return undefined;
 }
 
 /** Lenient parse for stored policies: anything malformed degrades to unlimited, never a crash. */
