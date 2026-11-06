@@ -122,19 +122,30 @@ def main():
         # --- LangChain tools ---
         tools = get_tools(client)
         by_name = {t.name: t for t in tools}
-        check("18 tools built", len(tools) == 18, sorted(by_name))
+        check("19 tools built", len(tools) == 19, sorted(by_name))
         check("tool names cover every route",
               {"issue_asset", "reissue_asset", "issue_subasset", "issue_unique",
                "transfer_asset", "list_assets", "get_asset", "simulate_intent",
                "approve_intent", "deny_intent", "pending_intents", "get_policy",
                "set_policy", "list_presets", "apply_preset", "get_ratelimit",
-               "get_audit", "create_wallet"} == set(by_name))
+               "get_anomaly_stats", "get_audit", "create_wallet"} == set(by_name))
         stats = client.get_ratelimit()
         check("client get_ratelimit: unlimited agent reports limited:false",
               stats.get("limited") is False and stats.get("agentId") == AGENT, stats)
         tool_stats = json.loads(by_name["get_ratelimit"].invoke({}))
         check("tool get_ratelimit reports limited:false",
               tool_stats.get("limited") is False, tool_stats)
+        anom = client.get_anomaly_stats()
+        check("client get_anomaly_stats: fresh agent reports zero holds, default thresholds",
+              anom.get("anomalyHolds") == 0
+              and anom.get("thresholds", {}).get("qtyMultiple") == 10
+              and anom.get("agentId") == AGENT, anom)
+        tool_anom = json.loads(by_name["get_anomaly_stats"].invoke({}))
+        check("tool get_anomaly_stats reports zero holds",
+              tool_anom.get("anomalyHolds") == 0
+              and tool_anom.get("bySignal") == {"QTY_OUTLIER": 0,
+                                                 "FIRST_SEEN_DESTINATION_BURST": 0},
+              tool_anom)
 
         tool_issue = json.loads(by_name["issue_asset"].invoke(
             {"name": "TOOLCOIN", "qty": "50", "to_address": DEST}))

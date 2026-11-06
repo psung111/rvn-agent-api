@@ -250,6 +250,18 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
+    def get_anomaly_stats(window_hours: int = 24) -> str:
+        """Read the calling agent's anomaly stats: how many anomaly holds
+        the gate raised over a recent window, broken down by signal
+        (QTY_OUTLIER, FIRST_SEEN_DESTINATION_BURST), how many of those
+        holds are still pending, and the anomaly thresholds currently in
+        force. Read-only."""
+        try:
+            return _dump(client.get_anomaly_stats(window_hours=window_hours))
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
     def get_audit(limit: int = 50) -> str:
         """Read the tail of the hash-chained audit log with its chain
         validity flag. Use it to verify what actually happened."""
@@ -283,6 +295,7 @@ def build_tools(client: RvnApiClient) -> list:
         list_presets,
         apply_preset,
         get_ratelimit,
+        get_anomaly_stats,
         get_audit,
         create_wallet,
     ]

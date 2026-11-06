@@ -332,6 +332,38 @@ async function main(): Promise<void> {
     rlKindAfter.ok && rlKindAfter.body.kinds?.issue_asset?.tokensAvailable === 0 &&
     rlKindAfter.body.kinds?.issue_asset?.wouldAllow === false, rlKindAfter.body);
 
+  // 19. anomaly stats via MCP (v0.22.0) — a fresh agent, so its
+  // history is only the three baseline issues below (the shared smoke
+  // agent's earlier qty-500 issues would drag the median up).
+  const anomAgent = 'mcp-smoke-anomaly';
+  const anomSet = await toolCall('set_policy', {
+    agentId: anomAgent,
+    policy: {
+      ...rlPolicy.body, agentId: anomAgent, allowedDestinations: [walletA, walletB],
+      anomalyQtyMultiple: 2,
+    },
+  });
+  check('set_policy with an anomaly threshold via MCP 200s',
+    anomSet.ok && anomSet.body.httpStatus === 200, anomSet.body);
+  const anomFresh = await toolCall('get_anomaly_stats', { agentId: anomAgent });
+  check('get_anomaly_stats via MCP reports defaults and zero holds for a fresh agent',
+    anomFresh.ok && anomFresh.body.anomalyHolds === 0 &&
+    anomFresh.body.thresholds?.qtyMultiple === 2 &&
+    anomFresh.body.thresholds?.burstWindowSeconds === 3600, anomFresh.body);
+  for (let i = 1; i <= 3; i++) {
+    const r = await toolCall('issue_asset', { agentId: anomAgent, name: `SMOKEANOM${i}`, qty: '100', toAddress: walletA });
+    check(`anomaly baseline issue ${i} via MCP ALLOWs`, r.ok && r.body.decision?.kind === 'ALLOW', r.body);
+  }
+  const anomOutlier = await toolCall('issue_asset', { agentId: anomAgent, name: 'SMOKEANOM4', qty: '250', toAddress: walletA });
+  check('qty 250 (>2x median 100) holds via MCP under the anomaly multiple',
+    anomOutlier.ok && anomOutlier.body.decision?.kind === 'REQUIRE_APPROVAL' &&
+    anomOutlier.body.decision?.reasonCodes?.includes('ANOMALY_SUSPECTED'), anomOutlier.body);
+  const anomStats = await toolCall('get_anomaly_stats', { agentId: anomAgent });
+  check('get_anomaly_stats via MCP reports 1 hold, split by signal, 1 pending',
+    anomStats.ok && anomStats.body.anomalyHolds === 1 &&
+    anomStats.body.bySignal?.QTY_OUTLIER === 1 &&
+    anomStats.body.anomalyHoldsPending === 1, anomStats.body);
+
   child.kill();
   shuttingDown = true;
   console.log(process.exitCode ? 'MCP smoke: FAILED' : 'MCP smoke: all green');

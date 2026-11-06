@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import 'dotenv/config';
 import {
+  anomalyConfigFromPolicy,
   applyPreset,
   createsSupply,
   defaultPolicy,
+  detectAnomalies,
   evaluateIntent,
   isExpired,
   POLICY_PRESETS,
@@ -12,8 +14,10 @@ import {
   rateLimitKindKey,
   rateLimitsPerKindFromPolicy,
   TokenBucket,
+  validateAnomalyFields,
   validateRateLimitFields,
   validateRateLimitKindFields,
+  type AnomalySignal,
   type Decision,
   type RateLimitConfig,
   type RvnIntent,
@@ -808,6 +812,76 @@ async function main() {
     return { agentId, limited: true, ...rateLimiter.snapshot(agentId, config), kinds };
   });
 
+  /**
+   * Anomaly stats for one agent (read-only, v0.22.0): how many anomaly
+   * holds the gate raised over a recent window, broken down by signal,
+   * plus the thresholds currently in force — so the hold-not-deny gate
+   * is observable without scraping the audit log.
+   *
+   * A hold counts when the intent's stored decision carries
+   * ANOMALY_SUSPECTED: that covers holds still waiting, holds denied by
+   * the owner, and holds approved while the signal still fired at
+   * re-evaluation. A hold whose re-evaluation no longer flags (thresholds
+   * moved, baseline shifted) is not counted — the stats describe
+   * decisions as recorded, not a re-run. The per-signal split re-runs
+   * the detector over each counted intent against the history that
+   * preceded it, under the agent's CURRENT thresholds, so the split can
+   * differ from the thresholds in force when the hold was raised; the
+   * thresholds in the response say which ones were used.
+   *
+   * `windowHours` (query, default 24, clamped to 1..168) bounds the
+   * window; history is capped at the store's 200 most recent intents.
+   */
+  app.get('/v1/anomaly/:agentId', async (req) => {
+    const { agentId } = req.params as { agentId: string };
+    const q = req.query as { windowHours?: string };
+    const parsedWindow = Number(q.windowHours);
+    const windowHours =
+      Number.isFinite(parsedWindow) && parsedWindow >= 1 && parsedWindow <= 168
+        ? Math.floor(parsedWindow)
+        : 24;
+    const policy = await policyFor(agentId);
+    const config = anomalyConfigFromPolicy(policy);
+    const nowMs = Date.now();
+    const windowStartMs = nowMs - windowHours * 60 * 60 * 1000;
+    const history = await store.intents.history(agentId);
+    const inWindow = history.filter((h) => h.requestedAtMs >= windowStartMs);
+    const bySignal: Record<AnomalySignal, number> = {
+      QTY_OUTLIER: 0,
+      FIRST_SEEN_DESTINATION_BURST: 0,
+    };
+    let anomalyHolds = 0;
+    for (const intent of inWindow) {
+      const decision = await store.intents.getDecision(intent.id);
+      if (!decision || !decision.reasonCodes.includes('ANOMALY_SUSPECTED')) continue;
+      anomalyHolds++;
+      // Attribute the signals: re-run the detector as of the intent's
+      // own submit time, against the full history (which the detector
+      // filters to priors itself), under the current thresholds.
+      for (const signal of detectAnomalies(intent, history, intent.requestedAtMs, config)) {
+        bySignal[signal]++;
+      }
+    }
+    const pending = await store.intents.pending(nowMs);
+    const anomalyHoldsPending = pending.filter(
+      (p) => p.intent.agentId === agentId && p.decision.reasonCodes.includes('ANOMALY_SUSPECTED'),
+    ).length;
+    return {
+      agentId,
+      windowHours,
+      intentsInWindow: inWindow.length,
+      anomalyHolds,
+      anomalyHoldsPending,
+      bySignal,
+      thresholds: {
+        qtyMultiple: Number(config.qtyMultiple),
+        minHistory: config.minHistory,
+        burstWindowSeconds: config.burstWindowMs / 1000,
+        burstMinCount: config.burstMinCount,
+      },
+    };
+  });
+
   app.get('/v1/audit', async (req) => {
     const q = req.query as { limit?: string };
     return { chainValid: (await store.audit.verify()) === -1, entries: await store.audit.tail(Number(q.limit ?? 50)) };
@@ -883,6 +957,10 @@ async function main() {
     const kindLimitError = validateRateLimitKindFields(b);
     if (kindLimitError) {
       return reply.code(400).send({ error: kindLimitError });
+    }
+    const anomalyError = validateAnomalyFields(b);
+    if (anomalyError) {
+      return reply.code(400).send({ error: anomalyError });
     }
     await store.policies.set(b as RvnPolicy);
     await store.audit.append('DECISION', 'policy-update', agentId, { kind: 'POLICY_REPLACED' });

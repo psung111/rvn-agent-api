@@ -34,5 +34,5 @@
     "test:ratelimit": "tsx demo/ratelimit-test.ts",
     "test:langchain": "python3 tests/test_adapter.py"
   },
-  "version": "0.21.0"
+  "version": "0.22.0"
 }

@@ -1,5 +1,73 @@
 # Changelog
 
+## 2026-11-06 — v0.22.0 (Anomaly thresholds as policy fields + anomaly stats, item complete)
+
+- The anomaly detector's v0.12.0 constants are now per-agent policy
+  fields, so an operator can tune sensitivity without redeploying:
+  `anomalyQtyMultiple` (qty must exceed this multiple of the
+  same-kind median qty, default 10), `anomalyMinHistory` (minimum
+  same-kind samples before a qty outlier can fire, default 3),
+  `anomalyBurstWindowSeconds` (burst window, default 3600), and
+  `anomalyBurstMinCount` (minimum intents in the window before a
+  first-seen destination flags, default 3). Every field is optional;
+  an unset or malformed field falls back to its default, so older
+  policies keep the exact behavior they had.
+- New `AnomalyConfig` in `src/policy/anomaly.ts` with the established
+  lenient/strict split: `anomalyConfigFromPolicy()` resolves a policy
+  to a config (malformed fields degrade to defaults per field, never
+  a crash), `validateAnomalyFields()` rejects non-positive or
+  non-integer values strictly for PUT `/v1/policies/:agentId` and
+  preset overrides (400, nothing stored). `detectAnomalies()` takes
+  an optional config (defaulting to the v0.12.0 constants);
+  `evaluateIntent` passes the agent's resolved config, so the tuned
+  gate rides the existing submit, approval-time re-evaluation, and
+  simulate paths unchanged. `applyPreset` accepts all four fields as
+  overrides with the same positive-integer check.
+- New read-only `GET /v1/anomaly/:agentId` (`windowHours` query,
+  default 24, clamped to 1..168): the anomaly holds the gate raised
+  over the window, split by signal (`QTY_OUTLIER` /
+  `FIRST_SEEN_DESTINATION_BURST`), the holds still pending, and the
+  thresholds currently in force — so the hold-not-deny gate is
+  observable without scraping the audit log. A hold counts when its
+  stored decision carries `ANOMALY_SUSPECTED` (still waiting,
+  owner-denied, or approved while the signal still fired at
+  re-evaluation); the per-signal split re-runs the detector over each
+  counted intent against the history that preceded it, under the
+  agent's current thresholds. A stats read writes nothing (no intents,
+  no audit entries, no baseline pollution).
+- Adapters keep the "cover every route" invariant: new
+  `get_anomaly_stats` MCP tool (proxying the route, with an optional
+  `windowHours`) and a LangChain client method + tool (`langchain_rvn`
+  now builds 19 tools). The MCP `set_policy` / `apply_preset`
+  descriptions now name the anomaly fields.
+- `pnpm test:anomaly` extended (unit checks for the parse/validate
+  split; integration — tighter multiple 2 holds qty 250 while exactly
+  2x ALLOWs, minHistory 5 delays flagging until 5 samples exist,
+  burstMinCount 5 defuses a 3-intent burst, a 1s burst window ages out,
+  six PUT 400 cases that leave the default policy untouched, preset
+  override gating + a 400 case, and stats — 2 holds over 5 intents
+  split 1/1 by signal, 2 pending, approved hold still counts as
+  raised with pending dropping to 1, read purity, unknown agent zeros
+  with defaults) — all green. `demo/mcp-smoke.ts` gained an anomaly
+  section (7 checks: set_policy with a threshold, fresh-agent stats,
+  baseline ALLOWs, multiple-2 hold, stats split). `pnpm test:langchain`
+  updated (19 tools, client + tool stats shape) — all green.
+  `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:store`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit` still green. `initialize` now reports server
+  version 0.22.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README route table gained the
+  anomaly (and previously missing rate-limit) rows.
+- Environment note: no `pnpm` binary on this VM — verification ran
+  the direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content.
+- The anomaly-thresholds roadmap item is complete; the next top item
+  is Postgres schema migrations.
+
 ## 2026-11-05 — v0.21.0 (Rate limiting, slice 4 — item complete)
 
 - Per-kind rate-limit buckets, layered on top of the agent-wide bucket.

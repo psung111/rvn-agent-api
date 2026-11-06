@@ -64,6 +64,8 @@ verifies clean.
 | PUT | `/v1/policies/:agentId` | replace an agent's policy |
 | GET | `/v1/policies/presets` | list the policy presets (conservative / balanced / permissive) |
 | POST | `/v1/policies/:agentId/preset` | apply a preset to an agent, with optional per-agent `overrides` |
+| GET | `/v1/ratelimit/:agentId` | rate-limit stats for an agent (read-only) |
+| GET | `/v1/anomaly/:agentId?windowHours=` | anomaly stats for an agent: holds raised by signal, holds still pending, thresholds in force (read-only) |
 
 Policy defaults (`src/policy/presets.ts`): per-issue cap 100k units, approval above
 10k, 24h issue budget 500k, transfers to unknown destinations require approval,

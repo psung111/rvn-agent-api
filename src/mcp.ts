@@ -20,6 +20,7 @@
  *   - list_presets     -> GET  /v1/policies/presets
  *   - apply_preset     -> POST /v1/policies/:agentId/preset
  *   - get_ratelimit    -> GET  /v1/ratelimit/:agentId
+ *   - get_anomaly_stats -> GET /v1/anomaly/:agentId
  *
  * The MCP server is only a transport: the REST API stays the single
  * enforcement point — every tool call runs through the policy engine and the
@@ -233,7 +234,7 @@ const TOOLS: ToolDef[] = [
         agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
         policy: {
           type: 'object',
-          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited) and rateLimitKindLimits (per-kind { maxOps, windowSeconds } buckets, e.g. { issue_asset: { maxOps: 2, windowSeconds: 3600 } }).',
+          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited), rateLimitKindLimits (per-kind { maxOps, windowSeconds } buckets, e.g. { issue_asset: { maxOps: 2, windowSeconds: 3600 } }), and anomalyQtyMultiple / anomalyMinHistory / anomalyBurstWindowSeconds / anomalyBurstMinCount (positive integers tuning the anomaly gate; unset keeps the defaults 10 / 3 / 3600 / 3).',
         },
       },
       required: ['policy'],
@@ -251,7 +252,7 @@ const TOOLS: ToolDef[] = [
     description:
       'Apply a policy preset to an agent (POST /v1/policies/:agentId/preset), optionally with ' +
       'per-agent overrides for any overridable field (caps, budgets, thresholds, destination ' +
-      'lists, assetNamePattern, decisionTtlSeconds). Replaces the agent policy wholesale, like ' +
+      'lists, assetNamePattern, decisionTtlSeconds, rate limits, anomaly thresholds). Replaces the agent policy wholesale, like ' +
       'set_policy, and is audited as a policy replacement naming the preset.',
     inputSchema: {
       type: 'object',
@@ -278,6 +279,21 @@ const TOOLS: ToolDef[] = [
       type: 'object',
       properties: {
         agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
+      },
+    },
+  },
+  {
+    name: 'get_anomaly_stats',
+    description:
+      'Read an agent\'s anomaly stats (GET /v1/anomaly/:agentId): how many anomaly holds the gate raised ' +
+      'over a recent window, broken down by signal (QTY_OUTLIER, FIRST_SEEN_DESTINATION_BURST), how many ' +
+      'of those holds are still pending, and the anomaly thresholds currently in force. Read-only — ' +
+      'checking stats never changes what the next submit sees.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
+        windowHours: { type: 'number', description: 'Window in hours (default 24, 1..168)' },
       },
     },
   },
@@ -485,6 +501,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       const { status, body } = await api(`/v1/ratelimit/${encodeURIComponent(agentId)}`);
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
+    case 'get_anomaly_stats': {
+      const agentId = typeof args.agentId === 'string' && args.agentId ? args.agentId : 'agent-1';
+      const windowHours = typeof args.windowHours === 'number' ? args.windowHours : 24;
+      const { status, body } = await api(
+        `/v1/anomaly/${encodeURIComponent(agentId)}?windowHours=${encodeURIComponent(String(windowHours))}`,
+      );
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
     case 'list_assets': {
       const pattern = typeof args.pattern === 'string' && args.pattern ? args.pattern : '*';
       const { status, body } = await api(`/v1/assets?pattern=${encodeURIComponent(pattern)}`);
@@ -531,7 +555,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.21.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.22.0' },
       });
     }
     case 'notifications/initialized':

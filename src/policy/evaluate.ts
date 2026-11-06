@@ -1,4 +1,4 @@
-import { detectAnomalies } from './anomaly.js';
+import { anomalyConfigFromPolicy, detectAnomalies } from './anomaly.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from './types.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -157,7 +157,7 @@ export async function evaluateIntent(
   // destination or an above-threshold qty keep their original reason: the
   // anomaly signal exists to catch the case the other gates miss, an
   // intent that looks policy-clean but statistically strange.
-  if (detectAnomalies(intent, history, nowMs).length > 0) {
+  if (detectAnomalies(intent, history, nowMs, anomalyConfigFromPolicy(policy)).length > 0) {
     return decide(intent, 'REQUIRE_APPROVAL', ['ANOMALY_SUSPECTED'], policy, nowMs);
   }
 

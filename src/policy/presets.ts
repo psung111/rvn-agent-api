@@ -1,4 +1,5 @@
 import type { RvnPolicy } from './types.js';
+import { validateAnomalyFields } from './anomaly.js';
 import {
   validateRateLimitFields,
   validateRateLimitKindFields,
@@ -156,9 +157,18 @@ export function applyPreset(
       if (kindError) {
         throw new Error(`override 'rateLimitKindLimits': ${kindError}`);
       }
+    } else if (
+      key === 'anomalyQtyMultiple' ||
+      key === 'anomalyMinHistory' ||
+      key === 'anomalyBurstWindowSeconds' ||
+      key === 'anomalyBurstMinCount'
+    ) {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+        throw new Error(`override '${key}' must be a positive integer`);
+      }
     } else {
       throw new Error(
-        `unknown override field: '${key}' (overridable: ${[...OVERRIDABLE_QTY_FIELDS, ...OVERRIDABLE_LIST_FIELDS, 'assetNamePattern', 'decisionTtlSeconds', 'rateLimitMaxOps', 'rateLimitWindowSeconds', 'rateLimitKindLimits'].join(', ')})`,
+        `unknown override field: '${key}' (overridable: ${[...OVERRIDABLE_QTY_FIELDS, ...OVERRIDABLE_LIST_FIELDS, 'assetNamePattern', 'decisionTtlSeconds', 'rateLimitMaxOps', 'rateLimitWindowSeconds', 'rateLimitKindLimits', 'anomalyQtyMultiple', 'anomalyMinHistory', 'anomalyBurstWindowSeconds', 'anomalyBurstMinCount'].join(', ')})`,
       );
     }
     merged[key] = value;
@@ -173,6 +183,10 @@ export function applyPreset(
   const kindLimitError = validateRateLimitKindFields(merged as Partial<RvnPolicy>);
   if (kindLimitError) {
     throw new Error(kindLimitError);
+  }
+  const anomalyError = validateAnomalyFields(merged as Partial<RvnPolicy>);
+  if (anomalyError) {
+    throw new Error(anomalyError);
   }
   return merged as unknown as RvnPolicy;
 }

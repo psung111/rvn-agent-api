@@ -346,13 +346,36 @@ and logs the result in CHANGELOG.md.
     telegram-callback, simulate, reissue, subasset, unique, presets,
     anomaly, store, webhooks, langchain suites still green. The
     rate-limiting item is complete.
-- [ ] **Anomaly thresholds as policy fields + anomaly stats** — the
-  v0.12.0 follow-up: move the anomaly detector's constants (qty-outlier
-  multiplier, burst window/count, minimum history samples) into policy
-  fields so an operator can tune sensitivity per agent instead of
-  redeploying, and add a read-only stats endpoint reporting per-agent
-  anomaly signals over a recent window (holds raised, by signal) so the
-  hold-not-deny gate is observable.
+- [x] 2026-11-06 — v0.22.0 Anomaly thresholds as policy fields + anomaly
+  stats (item complete): the v0.12.0 constants are now per-agent policy
+  fields — `anomalyQtyMultiple` (default 10), `anomalyMinHistory`
+  (default 3), `anomalyBurstWindowSeconds` (default 3600),
+  `anomalyBurstMinCount` (default 3) — resolved by
+  `anomalyConfigFromPolicy()` (lenient: malformed fields fall back to
+  the defaults, never a crash) and enforced strictly by
+  `validateAnomalyFields()` on PUT and preset overrides (non-positive
+  or non-integer values 400). `detectAnomalies` takes an optional
+  config; `evaluateIntent` passes the agent's resolved config, so
+  simulate runs the tuned gate with zero side effects like before. New
+  read-only `GET /v1/anomaly/:agentId` (`windowHours` query, default
+  24, clamped 1..168): holds raised in the window, split by signal
+  (`QTY_OUTLIER` / `FIRST_SEEN_DESTINATION_BURST`, re-run under the
+  current thresholds), holds still pending, and the thresholds in
+  force. A hold counts when its stored decision carries
+  `ANOMALY_SUSPECTED` (still-waiting, owner-denied, or approved while
+  the signal still fired at re-evaluation); a hold whose re-evaluation
+  no longer flags is not counted — stats describe decisions as
+  recorded. New `get_anomaly_stats` MCP tool and LangChain client
+  method + tool (19 tools now), keeping the "adapters cover every
+  route" invariant. Verified with new checks in `pnpm test:anomaly`
+  (unit parse/validate split, tighter multiple / higher min-history /
+  higher burst count / 1s burst window gating, PUT + preset 400s,
+  stats counts/split/pending/approved-still-counts/purity/unknown
+  agent), a new MCP smoke section (7 checks), and
+  `pnpm test:langchain` (19 tools, client + tool stats shape); demo,
+  mcp-smoke, approvals, telegram-callback, simulate, reissue, subasset,
+  unique, presets, store, webhooks, ratelimit, langchain suites still
+  green.
 - [ ] **Postgres schema migrations** — the v0.7.0 follow-up: replace
   CREATE-IF-NOT-EXISTS at startup with versioned migrations (a
   `schema_migrations` table, ordered migration files applied in a

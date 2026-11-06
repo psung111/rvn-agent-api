@@ -294,6 +294,20 @@ class RvnApiClient:
             "GET", f"/v1/ratelimit/{agent_id or self.agent_id}"
         )
 
+    # -- anomaly detection ------------------------------------------------
+
+    def get_anomaly_stats(
+        self, agent_id: Optional[str] = None, window_hours: int = 24
+    ) -> dict[str, Any]:
+        """Read-only anomaly stats for an agent: holds raised by signal
+        over a recent window, holds still pending, and the thresholds
+        currently in force."""
+        return self._call(
+            "GET",
+            f"/v1/anomaly/{agent_id or self.agent_id}",
+            query={"windowHours": str(window_hours)},
+        )
+
     # -- audit ------------------------------------------------------------
 
     def get_audit(self, limit: int = 50) -> dict[str, Any]:

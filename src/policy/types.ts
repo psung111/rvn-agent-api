@@ -80,6 +80,20 @@ export interface RvnPolicy {
   rateLimitKindLimits?: Partial<
     Record<IntentKind, { maxOps: number; windowSeconds: number }>
   >;
+  /**
+   * Optional anomaly-detector thresholds (v0.22.0): tune the v0.12.0
+   * hold-not-deny gate per agent instead of redeploying. Every field is
+   * optional and falls back to its default when unset or malformed, so
+   * older policies keep the exact behavior they had.
+   */
+  /** Qty must exceed this multiple of the same-kind median qty to flag (default 10). */
+  anomalyQtyMultiple?: number;
+  /** Minimum same-kind samples before a qty outlier can fire (default 3). */
+  anomalyMinHistory?: number;
+  /** Burst window in seconds for the first-seen-destination signal (default 3600). */
+  anomalyBurstWindowSeconds?: number;
+  /** Minimum intents in the burst window before a first-seen destination flags (default 3). */
+  anomalyBurstMinCount?: number;
 }
 
 export interface Decision {
