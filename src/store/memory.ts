@@ -79,6 +79,8 @@ class MemoryRateLimitStore implements RateLimitStore {
 /** Ephemeral backend: everything lives in process memory. */
 export class MemoryStore implements Store {
   readonly kind = 'memory' as const;
+  /** No schema to migrate: the memory store never applies migrations. */
+  readonly appliedMigrations: readonly string[] = [];
   readonly policies = new MemoryPolicyStore();
   readonly intents = new MemoryIntentStore();
   readonly ledger = new InMemoryIssueLedger();

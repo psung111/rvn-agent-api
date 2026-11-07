@@ -64,6 +64,12 @@ export interface RateLimitStore {
  */
 export interface Store {
   readonly kind: 'memory' | 'postgres';
+  /**
+   * Schema migrations applied to this store, oldest first. The in-memory
+   * store reports [] (nothing to migrate); the Postgres store reports the
+   * versions from schema_migrations (also on /v1/health).
+   */
+  readonly appliedMigrations: readonly string[];
   readonly policies: PolicyStore;
   readonly intents: IntentStore;
   readonly ledger: IssueLedger;

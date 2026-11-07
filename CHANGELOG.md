@@ -1,5 +1,66 @@
 # Changelog
 
+## 2026-11-07 — v0.23.0 (Postgres schema migrations, item complete)
+
+- Versioned migrations replace the startup CREATE-IF-NOT-EXISTS
+  `schema.sql` (deleted; its GitHub copy stays until a
+  deletion-capable push — `push-files` only creates/updates). New
+  `src/store/migrations.ts`: `loadMigrations()` reads
+  `<version>_<name>.sql` files from `src/store/migrations/`,
+  rejecting misnamed files, duplicate versions, gaps, and a first
+  version other than 0001; `applyMigrations()` bootstraps a
+  `schema_migrations` table, verifies the database's applied set is a
+  prefix of the files (an unknown applied version — a code downgrade
+  — or a gap in the applied set fails fast with a clear error), and
+  applies each pending migration in its own transaction together with
+  its `schema_migrations` row, so a failed migration rolls back
+  entirely — there is no half-applied state — and the error names the
+  migration that failed. The runner needs only a pool with
+  `query`/`connect`, so it is testable without a live database.
+- `0001_initial.sql` is the old schema verbatim (all IF NOT EXISTS
+  guards kept, so a database created by `schema.sql` applies it as a
+  no-op and just records it); `0002_decisions_kind_index.sql` is the
+  first real schema evolution — an expression index on
+  `decision->>'kind'` so the pending-intents lookup stops scanning
+  the decisions table as held intents accumulate. Adding a migration
+  is now: add `NNNN_name.sql` to `src/store/migrations/` and restart.
+- `PostgresStore.connect` runs the migrations instead of the old
+  schema blob and exposes `appliedMigrations` (new `Store` field;
+  the memory store reports `[]`); `/v1/health` reports it too, so an
+  operator can see which schema version is live. A `MigrationError`
+  is never swallowed into the in-memory fallback in `storeFromEnv`:
+  a broken schema fails startup loudly instead of silently splitting
+  the audit chain and losing persistence; an unreachable database
+  still falls back to memory as before. `docker-compose.yml` no
+  longer mounts a schema file — the API migrates at startup.
+- New `pnpm test:migrations` (`demo/migration-test.ts`, 31 checks):
+  filename parsing and set-validation unit checks, temp-directory
+  loads (misnamed file and gap rejected), a fake-pool runner proving
+  fresh apply in order with one transaction per migration, idempotent
+  re-run, a failing 0002 rolling back (no row, no committed
+  statements) and succeeding on retry, downgrade and gap fail-fast,
+  plus a live leg against a scratch database when `TEST_DATABASE_URL`
+  is set (skipped here — no local Postgres) and a health check
+  proving `/v1/health` reports `migrations: []` on the memory store.
+  `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:webhooks`, `pnpm test:ratelimit`,
+  `pnpm test:langchain` still green. `initialize` now reports server
+  version 0.23.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`).
+- Environment note: no `pnpm` binary on this VM — verification ran
+  the direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:migrations` script.
+  One test-found bug fixed in the same session: the migration
+  filename regex rejected underscores, so the shipped
+  `0002_decisions_kind_index.sql` itself would not have loaded.
+- The Postgres schema migrations roadmap item is complete; the next
+  top item is audit retention & partitioning.
+
 ## 2026-11-06 — v0.22.0 (Anomaly thresholds as policy fields + anomaly stats, item complete)
 
 - The anomaly detector's v0.12.0 constants are now per-agent policy

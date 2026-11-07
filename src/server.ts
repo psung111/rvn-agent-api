@@ -410,6 +410,7 @@ async function main() {
     ok: true,
     mock: MOCK,
     store: store.kind,
+    migrations: store.appliedMigrations,
     approvals: {
       telegramConfigured: approvalNotifier.name === 'telegram',
       telegramWebhookSecretConfigured: WEBHOOK_SECRET !== undefined,

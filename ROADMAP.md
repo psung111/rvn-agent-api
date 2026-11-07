@@ -376,12 +376,41 @@ and logs the result in CHANGELOG.md.
   mcp-smoke, approvals, telegram-callback, simulate, reissue, subasset,
   unique, presets, store, webhooks, ratelimit, langchain suites still
   green.
-- [ ] **Postgres schema migrations** — the v0.7.0 follow-up: replace
-  CREATE-IF-NOT-EXISTS at startup with versioned migrations (a
-  `schema_migrations` table, ordered migration files applied in a
-  transaction, fail-fast with a clear error on a half-applied
-  migration), so the schema can evolve — new columns, indexes, and
-  the audit partitioning below — without hand-editing live databases.
+- [x] 2026-11-07 — v0.23.0 Postgres schema migrations (item complete):
+  versioned migrations replace the startup CREATE-IF-NOT-EXISTS
+  `schema.sql`. New `src/store/migrations.ts` — `loadMigrations()` reads
+  `<version>_<name>.sql` files from `src/store/migrations/`, rejecting
+  misnamed files, duplicate versions, gaps, and a first version other
+  than 0001; `applyMigrations()` bootstraps a `schema_migrations` table,
+  checks the database's applied set is a prefix of the files (an unknown
+  applied version — a code downgrade — or a gap in the applied set fails
+  fast with a clear error), and applies each pending migration in its own
+  transaction together with its `schema_migrations` row, so a failure
+  rolls the migration back entirely and the error names the migration.
+  `0001_initial.sql` is the old schema verbatim (IF NOT EXISTS guards
+  kept, so databases created by `schema.sql` apply it as a no-op);
+  `0002_decisions_kind_index.sql` adds an expression index on
+  `decision->>'kind'` for the pending-intents lookup. `PostgresStore`
+  runs migrations at connect and exposes `appliedMigrations` (also on
+  `/v1/health`; the memory store reports `[]`). A `MigrationError` is
+  never swallowed into the in-memory fallback in `storeFromEnv` — a
+  broken schema fails startup loudly instead of silently splitting the
+  audit chain — while an unreachable database still falls back as
+  before. `docker-compose.yml` no longer mounts a schema file (the API
+  migrates at startup). Verified with new `pnpm test:migrations`
+  (`demo/migration-test.ts`, 31 checks: filename/validation unit
+  checks, temp-dir loads, a fake-pool runner — fresh apply in order,
+  one transaction per migration, idempotent re-run, failing 0002
+  rolls back with no row and succeeds on retry, downgrade/gap
+  fail-fast — plus a live leg against a scratch database when
+  `TEST_DATABASE_URL` is set, and a health check; live leg skipped
+  here, no local Postgres). `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`,
+  `pnpm test:simulate`, `pnpm test:reissue`, `pnpm test:subasset`,
+  `pnpm test:unique`, `pnpm test:presets`, `pnpm test:anomaly`,
+  `pnpm test:store`, `pnpm test:webhooks`, `pnpm test:ratelimit`,
+  `pnpm test:langchain` still green. Follow-ups: the audit
+  partitioning below is the first consumer of a real schema change.
 - [ ] **Audit retention & partitioning** — the v0.7.0 follow-up: as the
   hash chain grows, partition `audit_entries` by time (monthly
   partitions) and add a retention policy (archive partitions older

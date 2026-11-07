@@ -1,10 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { makeChainedEntry, verifyChain, type AuditEntry, type AuditKind } from '../audit.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
+import { applyMigrations, loadMigrations, type Migration } from './migrations.js';
 import type { AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
-
-const SCHEMA_SQL = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8');
 
 function rowToEntry(r: {
   seq: string | number; prev_hash: string; hash: string; at_ms: string | number;
@@ -191,16 +190,18 @@ class PostgresLedger implements IssueLedger {
   }
 }
 
-/** Postgres-backed store. Use PostgresStore.connect(); it applies the schema. */
+/** Postgres-backed store. Use PostgresStore.connect(); it runs the versioned migrations. */
 export class PostgresStore implements Store {
   readonly kind = 'postgres' as const;
+  readonly appliedMigrations: readonly string[];
   readonly policies: PolicyStore;
   readonly intents: IntentStore;
   readonly ledger: IssueLedger;
   readonly audit: AuditStore;
   readonly ratelimits: RateLimitStore;
 
-  private constructor(private pool: Pool) {
+  private constructor(private pool: Pool, appliedMigrations: readonly string[]) {
+    this.appliedMigrations = appliedMigrations;
     this.policies = new PostgresPolicyStore(pool);
     this.intents = new PostgresIntentStore(pool);
     this.ledger = new PostgresLedger(pool);
@@ -208,13 +209,22 @@ export class PostgresStore implements Store {
     this.ratelimits = new PostgresRateLimitStore(pool);
   }
 
-  /** Connects, applies schema.sql, and smoke-tests the connection. Throws on any failure. */
+  /**
+   * Connects, runs pending versioned migrations from src/store/migrations/
+   * (each in its own transaction), and smoke-tests the connection. Throws
+   * on any failure; a MigrationError means the schema is in a state the
+   * code cannot trust, and it must fail fast (see storeFromEnv) rather
+   * than silently falling back to memory and splitting the audit chain.
+   */
   static async connect(databaseUrl: string): Promise<PostgresStore> {
     const pool = new Pool({ connectionString: databaseUrl, max: 5, connectionTimeoutMillis: 5000 });
     try {
-      await pool.query(SCHEMA_SQL);
+      const migrations: Migration[] = loadMigrations(
+        fileURLToPath(new URL('./migrations/', import.meta.url)),
+      );
+      const applied = await applyMigrations(pool, migrations);
       await pool.query('SELECT 1');
-      return new PostgresStore(pool);
+      return new PostgresStore(pool, applied);
     } catch (err) {
       await pool.end().catch(() => undefined);
       throw err;

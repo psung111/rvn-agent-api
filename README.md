@@ -163,9 +163,15 @@ the real API against a stub receiver.
 By default everything (policies, intents, decisions, issue ledger, audit
 chain) lives in process memory — restart the API and it's gone. To persist:
 
-1. `docker compose up -d` (postgres:16-alpine; the schema is created automatically)
+1. `docker compose up -d` (postgres:16-alpine)
 2. `export RVN_DATABASE_URL=postgres://rvn:rvn@localhost:5432/rvn_agent_api`
-3. Restart the API. `/v1/health` reports `"store": "postgres"`.
+3. Restart the API. `/v1/health` reports `"store": "postgres"` and the
+   applied schema versions under `"migrations"`. The API runs the
+   versioned migrations in `src/store/migrations/` at startup (tracked
+   in the `schema_migrations` table); to evolve the schema, add a
+   `NNNN_name.sql` file there and restart — each migration runs in its
+   own transaction, and a failed or inconsistent migration stops startup
+   with a clear error instead of silently falling back to memory.
 
 If the database is unreachable the API still boots on the in-memory store and
 logs a warning — nothing is persisted in that mode. `pnpm test:store` runs the
