@@ -313,6 +313,15 @@ class RvnApiClient:
     def get_audit(self, limit: int = 50) -> dict[str, Any]:
         return self._call("GET", "/v1/audit", query={"limit": str(limit)})
 
+    def archive_audit(self, before_ms: Optional[int] = None) -> dict[str, Any]:
+        """Archive audit entries older than before_ms (epoch ms) to a JSON
+        file with a chain-verification proof, then prune them from the
+        live chain (the newest entry is always kept as the chain anchor).
+        Omit before_ms to use the server's retention policy
+        (RVN_AUDIT_RETENTION_DAYS, default 90 days)."""
+        body: Optional[dict[str, Any]] = {"beforeMs": before_ms} if before_ms is not None else None
+        return self._call("POST", "/v1/audit/archive", body)
+
 
 def _parse(payload: str) -> dict[str, Any]:
     parsed = json.loads(payload) if payload else {}

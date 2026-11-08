@@ -60,6 +60,15 @@ class MemoryAuditStore implements AuditStore {
   async verify(): Promise<number> {
     return this.log.verify();
   }
+  async oldest(): Promise<AuditEntry | undefined> {
+    return this.log.oldest();
+  }
+  async beforeMs(cutoffMs: number, limit?: number): Promise<AuditEntry[]> {
+    return this.log.beforeMs(cutoffMs, limit);
+  }
+  async prune(beforeSeq: number): Promise<number> {
+    return this.log.prune(beforeSeq);
+  }
 }
 
 class MemoryRateLimitStore implements RateLimitStore {

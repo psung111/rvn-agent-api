@@ -128,7 +128,35 @@ class PostgresAuditStore implements AuditStore {
     const { rows } = await this.pool.query(
       'SELECT seq, prev_hash, hash, at_ms, kind, intent_id, agent_id, detail FROM audit_entries ORDER BY seq ASC',
     );
-    return verifyChain(rows.map(rowToEntry));
+    if (rows.length === 0) return -1;
+    // Anchor at the oldest retained entry's prevHash: after a retention
+    // prune that is the archived head hash, not 'GENESIS' (see
+    // verifyChain in src/audit.ts); unpruned chains anchor at 'GENESIS'.
+    return verifyChain(rows.map(rowToEntry), rows[0].prev_hash as string);
+  }
+  async oldest(): Promise<AuditEntry | undefined> {
+    const { rows } = await this.pool.query(
+      'SELECT seq, prev_hash, hash, at_ms, kind, intent_id, agent_id, detail FROM audit_entries ORDER BY seq ASC LIMIT 1',
+    );
+    return rows[0] ? rowToEntry(rows[0]) : undefined;
+  }
+  async beforeMs(cutoffMs: number, limit = 10_000): Promise<AuditEntry[]> {
+    const n = Math.min(Math.max(limit, 1), 50_000);
+    const { rows } = await this.pool.query(
+      'SELECT seq, prev_hash, hash, at_ms, kind, intent_id, agent_id, detail FROM audit_entries WHERE at_ms < $1 ORDER BY seq ASC LIMIT $2',
+      [cutoffMs, n],
+    );
+    return rows.map(rowToEntry);
+  }
+  async prune(beforeSeq: number): Promise<number> {
+    // Always keep the newest row as the chain anchor for future appends,
+    // even when the caller asks to prune past it.
+    const { rowCount } = await this.pool.query(
+      `DELETE FROM audit_entries
+        WHERE seq < $1 AND seq < (SELECT MAX(seq) FROM audit_entries)`,
+      [beforeSeq],
+    );
+    return rowCount ?? 0;
   }
 }
 

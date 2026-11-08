@@ -271,6 +271,19 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
+    def archive_audit(before_ms: int = 0) -> str:
+        """Archive the audit entries older than a cutoff (epoch ms) to a
+        JSON file with a chain-verification proof, then prune them from
+        the live chain (the newest entry is always kept as the chain
+        anchor). The retained chain stays verifiable: its oldest entry
+        links to the archive head hash. Pass before_ms=0 to use the
+        server retention policy (default 90 days)."""
+        try:
+            return _dump(client.archive_audit(before_ms or None))
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
     def create_wallet() -> str:
         """Provision a fresh Ravencoin address for the calling agent."""
         try:
@@ -297,5 +310,6 @@ def build_tools(client: RvnApiClient) -> list:
         get_ratelimit,
         get_anomaly_stats,
         get_audit,
+        archive_audit,
         create_wallet,
     ]

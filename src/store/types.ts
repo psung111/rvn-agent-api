@@ -35,6 +35,17 @@ export interface AuditStore {
   tail(limit?: number): Promise<AuditEntry[]>;
   /** First broken seq, or -1 when the chain is intact. */
   verify(): Promise<number>;
+  /** Oldest retained entry, or undefined when the chain is empty. */
+  oldest(): Promise<AuditEntry | undefined>;
+  /** Entries older than cutoffMs, ascending by seq, capped at limit (default 10_000). */
+  beforeMs(cutoffMs: number, limit?: number): Promise<AuditEntry[]>;
+  /**
+   * Delete entries with seq < beforeSeq, always keeping the newest entry
+   * as the chain anchor for future appends. Returns the deleted count.
+   * The caller must have archived the deleted slice first (see
+   * src/audit/archive.ts) — prune on its own loses history.
+   */
+  prune(beforeSeq: number): Promise<number>;
 }
 
 /**

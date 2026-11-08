@@ -122,13 +122,14 @@ def main():
         # --- LangChain tools ---
         tools = get_tools(client)
         by_name = {t.name: t for t in tools}
-        check("19 tools built", len(tools) == 19, sorted(by_name))
+        check("20 tools built", len(tools) == 20, sorted(by_name))
         check("tool names cover every route",
               {"issue_asset", "reissue_asset", "issue_subasset", "issue_unique",
                "transfer_asset", "list_assets", "get_asset", "simulate_intent",
                "approve_intent", "deny_intent", "pending_intents", "get_policy",
                "set_policy", "list_presets", "apply_preset", "get_ratelimit",
-               "get_anomaly_stats", "get_audit", "create_wallet"} == set(by_name))
+               "get_anomaly_stats", "get_audit", "archive_audit",
+               "create_wallet"} == set(by_name))
         stats = client.get_ratelimit()
         check("client get_ratelimit: unlimited agent reports limited:false",
               stats.get("limited") is False and stats.get("agentId") == AGENT, stats)
@@ -209,6 +210,17 @@ def main():
 
         audit = json.loads(by_name["get_audit"].invoke({}))
         check("audit chain valid at end", audit.get("chainValid") is True, audit)
+
+        # archive_audit: an ancient cutoff archives nothing and writes no
+        # file; the client + tool shapes are exercised without pruning.
+        arch_none = client.archive_audit(before_ms=1)
+        check("client archive_audit with an ancient cutoff archives nothing",
+              arch_none.get("archived") is False and arch_none.get("entries") == 0,
+              arch_none)
+        tool_arch_none = json.loads(by_name["archive_audit"].invoke({"before_ms": 1}))
+        check("tool archive_audit with an ancient cutoff archives nothing",
+              tool_arch_none.get("archived") is False
+              and tool_arch_none.get("entries") == 0, tool_arch_none)
     finally:
         kill_api(child)
 

@@ -417,6 +417,42 @@ and logs the result in CHANGELOG.md.
   than N days to cold storage with a chain-verification proof, then
   drop them), so verification stays fast and the database stays
   bounded without breaking the chain's verifiability.
+  - [x] 2026-11-08 — v0.24.0 archive export + chain-proof + retention
+    pruning (slice 1, item partial): new `src/audit/archive.ts` —
+    `buildArchive()` exports a contiguous slice as a self-contained
+    document (seq range, first entry's prevHash, head hash),
+    `verifyArchive()` re-verifies the document (header + internal
+    chain), and `verifyContinuity()` proves the retained chain starts
+    exactly where the archive ended (oldest retained entry links to
+    the head hash at lastSeq + 1). Retention config from
+    `RVN_AUDIT_RETENTION_DAYS` (1–3650, default 90) and
+    `RVN_AUDIT_ARCHIVE_DIR` (default `audit-archives/`), lenient
+    parsing like the webhook/rate-limit config. `verifyChain` takes
+    an anchor prevHash, so a pruned chain still verifies — the anchor
+    is the archived head hash instead of `GENESIS`. New `AuditStore`
+    seam (`oldest` / `beforeMs` / `prune`, always keeping the newest
+    entry as the chain anchor) on both backends. New
+    `POST /v1/audit/archive` (optional `beforeMs`, default = the
+    retention cutoff; at most 10,000 entries per call): writes the
+    archive file before pruning anything, refuses with 500 on a
+    broken chain or a failed write, records the proof in-chain as an
+    `AUDIT_ARCHIVED` entry, and reports continuity — entries appended
+    concurrently survive the prune (they get a seq above the archived
+    range) and are picked up by the next run. New `archive_audit` MCP
+    tool and LangChain client method + tool (20 tools now), keeping
+    the "adapters cover every route" invariant. `/v1/health` reports
+    the retention config. Verified with new `pnpm test:archive`
+    (`demo/archive-test.ts`, 57 checks: archive/continuity/config
+    units, the memory-store prune seam, and a booted-API integration
+    — file written, entries pruned, chain valid, continuity holds),
+    new prune checks in `pnpm test:store` (both backends), an MCP
+    smoke section, and `pnpm test:langchain` (20 tools, client + tool
+    archive shape); demo, mcp-smoke, approvals,
+    telegram-callback, simulate, reissue, subasset, unique, presets,
+    anomaly, store, webhooks, ratelimit, migrations suites still
+    green. Remainder: monthly declarative partitioning of
+    `audit_entries` in Postgres (a table-rebuild migration; the
+    archive/prune flow already works on the unpartitioned table).
 - [ ] **Ops metrics endpoint** — `GET /v1/metrics` (JSON, no new deps):
   decision counts by kind and reason code, rate-limit 429s by agent
   and kind, webhook delivery successes/failures by endpoint, approval

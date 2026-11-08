@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import Fastify from 'fastify';
 import 'dotenv/config';
+import {
+  buildArchive,
+  MAX_ARCHIVE_ENTRIES,
+  retentionConfigFromEnv,
+  verifyContinuity,
+  type AuditArchive,
+} from './audit/archive.js';
 import {
   anomalyConfigFromPolicy,
   applyPreset,
@@ -40,6 +49,9 @@ const PORT = Number(process.env.PORT ?? 3001);
 let store: Store;
 const approvalNotifier = notifierFromEnv();
 const webhookDispatcher = webhookDispatcherFromEnv();
+// Audit retention (v0.24.0): entries older than retentionDays are archived
+// to JSON files with a chain-verification proof by POST /v1/audit/archive.
+const retention = retentionConfigFromEnv();
 const telegramConfig = telegramConfigFromEnv();
 const telegramApi = telegramConfig ? new TelegramApi(telegramConfig.botToken) : null;
 // Optional shared secret proving the update came from Telegram. Set it with
@@ -91,6 +103,9 @@ async function main() {
     WEBHOOK_SECRET
       ? 'telegram webhook: secret check enabled'
       : 'telegram webhook: no secret configured (set TELEGRAM_WEBHOOK_SECRET for a public host)',
+  );
+  app.log.info(
+    `audit retention: ${retention.retentionDays} days, archives to ${retention.archiveDir}`,
   );
 
   const policyFor = async (agentId: string): Promise<RvnPolicy> =>
@@ -411,6 +426,10 @@ async function main() {
     mock: MOCK,
     store: store.kind,
     migrations: store.appliedMigrations,
+    audit: {
+      retentionDays: retention.retentionDays,
+      archiveDir: retention.archiveDir,
+    },
     approvals: {
       telegramConfigured: approvalNotifier.name === 'telegram',
       telegramWebhookSecretConfigured: WEBHOOK_SECRET !== undefined,
@@ -886,6 +905,99 @@ async function main() {
   app.get('/v1/audit', async (req) => {
     const q = req.query as { limit?: string };
     return { chainValid: (await store.audit.verify()) === -1, entries: await store.audit.tail(Number(q.limit ?? 50)) };
+  });
+
+  /**
+   * Archive + prune the audit chain (retention, v0.24.0): export every
+   * entry older than the cutoff to a JSON archive file with a
+   * chain-verification proof, then prune the archived entries from the
+   * live chain. The newest entry is always kept as the chain anchor, so
+   * the retained chain stays verifiable — its oldest entry links to the
+   * archive's head hash (verifyContinuity), and the full history
+   * (archive + retained chain) verifies end to end across the boundary.
+   *
+   * Body: { beforeMs? } — epoch-ms cutoff; omitted means "older than the
+   * retention policy" (RVN_AUDIT_RETENTION_DAYS, default 90 days). At most
+   * MAX_ARCHIVE_ENTRIES are archived per call (moreMayRemain says to call
+   * again). The archive file is written before anything is pruned, so a
+   * failed write prunes nothing; a broken chain refuses with 500 instead
+   * of archiving history away. The proof is recorded in-chain as an
+   * AUDIT_ARCHIVED entry (firstSeq/lastSeq/headHash/archiveFile).
+   */
+  app.post('/v1/audit/archive', async (req, reply) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    let cutoffMs: number;
+    if (b.beforeMs === undefined) {
+      cutoffMs = Date.now() - retention.retentionDays * 24 * 3600 * 1000;
+    } else if (typeof b.beforeMs === 'number' && Number.isFinite(b.beforeMs)) {
+      cutoffMs = b.beforeMs;
+    } else {
+      return reply.code(400).send({ error: 'beforeMs must be a number (epoch ms)' });
+    }
+    const newest = (await store.audit.tail(1))[0];
+    if (!newest) {
+      return { archived: false, entries: 0, cutoffMs, reason: 'audit chain is empty' };
+    }
+    const fetched = await store.audit.beforeMs(cutoffMs, MAX_ARCHIVE_ENTRIES + 1);
+    const candidates = fetched.filter((e) => e.seq < newest.seq);
+    if (candidates.length === 0) {
+      return {
+        archived: false,
+        entries: 0,
+        cutoffMs,
+        reason: 'no entries older than the cutoff (the newest entry is always kept as the chain anchor)',
+      };
+    }
+    const moreMayRemain = candidates.length > MAX_ARCHIVE_ENTRIES;
+    const batch = candidates.slice(0, MAX_ARCHIVE_ENTRIES);
+    let archive: AuditArchive;
+    try {
+      archive = buildArchive(batch);
+    } catch (err) {
+      app.log.error({ err }, 'audit archive refused: chain broken');
+      return reply
+        .code(500)
+        .send({ error: `audit chain is broken, refusing to archive: ${(err as Error).message}` });
+    }
+    const fileName = `audit-archive-${archive.firstSeq}-${archive.lastSeq}.json`;
+    try {
+      await mkdir(retention.archiveDir, { recursive: true });
+      await writeFile(join(retention.archiveDir, fileName), `${JSON.stringify(archive, null, 2)}\n`, 'utf8');
+    } catch (err) {
+      app.log.error({ err }, 'audit archive file write failed');
+      return reply.code(500).send({ error: `could not write archive file: ${(err as Error).message}` });
+    }
+    // Entries appended concurrently get a seq above lastSeq, so they
+    // survive this prune and are picked up by the next archive run —
+    // nothing is pruned that the archive does not contain.
+    const pruned = await store.audit.prune(archive.lastSeq + 1);
+    const retainedOldest = await store.audit.oldest();
+    const continuityOk = verifyContinuity(archive, retainedOldest ? [retainedOldest] : []);
+    if (!continuityOk) {
+      app.log.error('audit archive continuity check failed after prune');
+    }
+    await store.audit.append('AUDIT_ARCHIVED', 'audit-archive', 'operator', {
+      firstSeq: archive.firstSeq,
+      lastSeq: archive.lastSeq,
+      entries: batch.length,
+      headHash: archive.headHash,
+      archiveFile: fileName,
+      pruned,
+      continuityOk,
+    });
+    return {
+      archived: true,
+      entries: batch.length,
+      firstSeq: archive.firstSeq,
+      lastSeq: archive.lastSeq,
+      headHash: archive.headHash,
+      archiveFile: fileName,
+      archiveDir: retention.archiveDir,
+      pruned,
+      continuityOk,
+      moreMayRemain,
+      cutoffMs,
+    };
   });
 
   // Static route first: Fastify matches it ahead of /v1/policies/:agentId,

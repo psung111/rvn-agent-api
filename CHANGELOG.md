@@ -1,5 +1,80 @@
 # Changelog
 
+## 2026-11-08 — v0.24.0 (Audit archive + retention pruning, slice 1)
+
+- Audit retention, slice 1 of the audit retention & partitioning item:
+  the archive/prune machinery is in place; monthly Postgres
+  partitioning (a table-rebuild migration) is the remainder. New
+  `src/audit/archive.ts`: `buildArchive()` exports a contiguous slice
+  of the hash chain as a self-contained document — the entries, the
+  seq range, the first entry's `prevHash`, and the last entry's hash
+  (the head hash) — refusing empty, non-contiguous, or internally
+  broken slices; `verifyArchive()` re-verifies a document (header vs
+  entries + internal chain, returning the first broken seq or -1);
+  `verifyContinuity()` proves the retained chain starts exactly where
+  the archive ended (its oldest entry links to the head hash at
+  `lastSeq + 1`), so the full history — archive + retained chain —
+  verifies end to end across the boundary.
+- Retention config from the environment, lenient like the webhook and
+  rate-limit config: `RVN_AUDIT_RETENTION_DAYS` (integer 1–3650,
+  default 90; malformed values fall back to 90) and
+  `RVN_AUDIT_ARCHIVE_DIR` (default `audit-archives/`; empty falls back
+  to the default). `/v1/health` reports both.
+- `verifyChain` takes an optional anchor prevHash, so a pruned chain
+  still verifies: the anchor is the oldest retained entry's prevHash
+  (the archived head hash), and for an unpruned chain that is
+  `GENESIS`, so behavior is unchanged. Hash recomputation still covers
+  every retained entry, so anchoring never hides tampering inside the
+  retained slice.
+- New `AuditStore` seam — `oldest()`, `beforeMs(cutoffMs, limit?)`
+  (ascending, capped at 10,000 by default), and `prune(beforeSeq)` —
+  implemented on both backends. Prune always keeps the newest entry as
+  the chain anchor for future appends (Postgres: `seq < (SELECT
+  MAX(seq) ...)`), and an append after a prune chains onto that anchor
+  with the next seq.
+- New `POST /v1/audit/archive` (body: optional `beforeMs` epoch ms;
+  omitted means "older than the retention policy"). At most 10,000
+  entries per call (`moreMayRemain` says to call again). The archive
+  file (`audit-archive-<firstSeq>-<lastSeq>.json`) is written before
+  anything is pruned, so a failed write prunes nothing; a broken chain
+  refuses with 500 instead of archiving history away. The proof is
+  recorded in-chain as a new `AUDIT_ARCHIVED` audit entry
+  (firstSeq/lastSeq/headHash/archiveFile). Entries appended
+  concurrently get a seq above the archived range, so they survive the
+  prune and are picked up by the next run — nothing is pruned that the
+  archive does not contain.
+- Adapters keep the "cover every route" invariant: new `archive_audit`
+  MCP tool and LangChain client method + tool (`langchain_rvn` now
+  builds 20 tools). One bug caught by the adapter test: the Python
+  client first sent `before_ms` on the wire while the server reads
+  `beforeMs` — it now sends the camelCase key.
+- New `pnpm test:archive` (`demo/archive-test.ts`, 57 checks):
+  archive/continuity/config unit checks, the memory-store prune seam
+  (prune keeps the anchor, append chains on, verify stays green), and
+  a booted-API integration (400 on a bad cutoff, no-op on an ancient
+  cutoff, a real archive — file written and verifying, 4 of 5 entries
+  pruned, chain valid, continuity holds against the live tail, the
+  `AUDIT_ARCHIVED` proof entry). `pnpm test:store` gained prune
+  checks in the shared suite (both backends); `demo/mcp-smoke.ts`
+  gained an archive section (ancient cutoff: archives nothing, writes
+  nothing); `pnpm test:langchain` updated (20 tools, client + tool
+  archive shape). `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`,
+  `pnpm test:simulate`, `pnpm test:reissue`, `pnpm test:subasset`,
+  `pnpm test:unique`, `pnpm test:presets`, `pnpm test:anomaly`,
+  `pnpm test:store`, `pnpm test:webhooks`, `pnpm test:ratelimit`,
+  `pnpm test:migrations` still green. `initialize` now reports server
+  version 0.24.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README route table gained the
+  archive row; `audit-archives/` added to `.gitignore`.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:archive` script.
+- Remainder of the audit retention & partitioning item: monthly
+  declarative partitioning of `audit_entries` in Postgres.
+
 ## 2026-11-07 — v0.23.0 (Postgres schema migrations, item complete)
 
 - Versioned migrations replace the startup CREATE-IF-NOT-EXISTS

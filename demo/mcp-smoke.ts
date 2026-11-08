@@ -19,6 +19,9 @@
  *       not reissuable), unknown root isError, simulate op:'unique'
  *   16. list_presets / apply_preset: gallery lists 3 presets, applying
  *       conservative to an agent gates over-cap issues, unknown preset isError
+ *   17-18. rate-limit stats / per-kind buckets via MCP
+ *   19. anomaly stats via MCP
+ *   20. archive_audit via MCP (ancient cutoff: archives nothing, writes nothing)
  *
  * Usage: pnpm mcp-smoke   (API must be running, default http://localhost:3001)
  */
@@ -104,7 +107,7 @@ async function main(): Promise<void> {
   // 2. tools/list
   const list = await send('tools/list');
   const names: string[] = (list.result?.tools ?? []).map((t: any) => t.name);
-  for (const want of ['issue_asset', 'transfer_asset', 'list_assets', 'get_audit']) {
+  for (const want of ['issue_asset', 'transfer_asset', 'list_assets', 'get_audit', 'archive_audit']) {
     check(`tools/list includes ${want}`, names.includes(want), names);
   }
 
@@ -363,6 +366,13 @@ async function main(): Promise<void> {
     anomStats.ok && anomStats.body.anomalyHolds === 1 &&
     anomStats.body.bySignal?.QTY_OUTLIER === 1 &&
     anomStats.body.anomalyHoldsPending === 1, anomStats.body);
+
+  // 20. archive_audit via MCP (v0.24.0) — an ancient cutoff archives
+  // nothing, so this only exercises the tool wiring and never writes a
+  // file or prunes anything on the API under test.
+  const archNone = await toolCall('archive_audit', { beforeMs: 1 });
+  check('archive_audit via MCP with an ancient cutoff archives nothing',
+    archNone.ok && archNone.body.archived === false && archNone.body.entries === 0, archNone.body);
 
   child.kill();
   shuttingDown = true;

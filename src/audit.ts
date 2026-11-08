@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export type AuditKind = 'DECISION' | 'APPROVAL' | 'DENIAL' | 'APPROVAL_NOTIFICATION' | 'APPROVAL_NOTIFICATION_FAILED' | 'EXECUTION' | 'EXECUTION_SKIPPED' | 'EXECUTION_FAILED' | 'WEBHOOK_DELIVERY' | 'WEBHOOK_DELIVERY_FAILED';
+export type AuditKind = 'DECISION' | 'APPROVAL' | 'DENIAL' | 'APPROVAL_NOTIFICATION' | 'APPROVAL_NOTIFICATION_FAILED' | 'EXECUTION' | 'EXECUTION_SKIPPED' | 'EXECUTION_FAILED' | 'WEBHOOK_DELIVERY' | 'WEBHOOK_DELIVERY_FAILED' | 'AUDIT_ARCHIVED';
 
 export interface AuditEntry {
   seq: number;
@@ -57,9 +57,16 @@ export function makeChainedEntry(
   return { seq, prevHash, hash, atMs, kind, intentId, agentId, detail: canonDetail };
 }
 
-/** Returns the first broken seq in ascending order, or -1 if the chain is intact. */
-export function verifyChain(entries: AuditEntry[]): number {
-  let prevHash = 'GENESIS';
+/**
+ * Returns the first broken seq in ascending order, or -1 if the chain is intact.
+ * `anchorPrevHash` is the prevHash the first entry must link to — 'GENESIS'
+ * for a chain from its head, or the archived head hash for a chain whose
+ * oldest entries were pruned away (v0.24.0 retention). The hash of every
+ * entry is still recomputed, so anchoring never hides tampering inside the
+ * retained slice; it only states where the slice starts.
+ */
+export function verifyChain(entries: AuditEntry[], anchorPrevHash = 'GENESIS'): number {
+  let prevHash = anchorPrevHash;
   for (const e of entries) {
     if (e.prevHash !== prevHash) return e.seq;
     if (hashEntry(e.seq, e.prevHash, e.atMs, e.kind, e.intentId, e.detail) !== e.hash) return e.seq;
@@ -85,7 +92,37 @@ export class AuditLog {
 
   /** Returns the first broken seq, or -1 if the chain is intact. */
   verify(): number {
-    return verifyChain(this.entries);
+    // Anchor at the oldest retained entry's prevHash: after a retention
+    // prune that is the archived head hash, not 'GENESIS' — and for an
+    // unpruned chain the oldest entry IS the genesis entry, so the anchor
+    // is 'GENESIS' and behavior is unchanged.
+    return verifyChain(this.entries, this.entries[0]?.prevHash ?? 'GENESIS');
+  }
+
+  /** Oldest retained entry, or undefined when the chain is empty. */
+  oldest(): AuditEntry | undefined {
+    return this.entries[0];
+  }
+
+  /** Entries older than cutoffMs, ascending by seq, capped at limit. */
+  beforeMs(cutoffMs: number, limit = 10_000): AuditEntry[] {
+    const n = Math.min(Math.max(limit, 1), 50_000);
+    return this.entries.filter((e) => e.atMs < cutoffMs).slice(0, n);
+  }
+
+  /**
+   * Delete entries with seq < beforeSeq, always keeping the newest entry
+   * as the chain anchor for future appends. Returns the deleted count.
+   * The caller must have archived the deleted slice first (see
+   * src/audit/archive.ts) — prune on its own loses history.
+   */
+  prune(beforeSeq: number): number {
+    if (this.entries.length <= 1) return 0;
+    const newestSeq = this.entries[this.entries.length - 1].seq;
+    const keepFrom = Math.min(beforeSeq, newestSeq);
+    const before = this.entries.length;
+    this.entries = this.entries.filter((e) => e.seq >= keepFrom);
+    return before - this.entries.length;
   }
 
   tail(limit = 50): AuditEntry[] {

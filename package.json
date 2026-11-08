@@ -30,10 +30,11 @@
     "test:presets": "tsx demo/preset-test.ts",
     "test:anomaly": "tsx demo/anomaly-test.ts",
     "test:store": "tsx demo/store-test.ts",
+    "test:archive": "tsx demo/archive-test.ts",
     "test:migrations": "tsx demo/migration-test.ts",
     "test:webhooks": "tsx demo/webhook-test.ts",
     "test:ratelimit": "tsx demo/ratelimit-test.ts",
     "test:langchain": "python3 tests/test_adapter.py"
   },
-  "version": "0.23.0"
+  "version": "0.24.0"
 }

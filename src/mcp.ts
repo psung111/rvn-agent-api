@@ -21,6 +21,7 @@
  *   - apply_preset     -> POST /v1/policies/:agentId/preset
  *   - get_ratelimit    -> GET  /v1/ratelimit/:agentId
  *   - get_anomaly_stats -> GET /v1/anomaly/:agentId
+ *   - archive_audit    -> POST /v1/audit/archive
  *
  * The MCP server is only a transport: the REST API stays the single
  * enforcement point — every tool call runs through the policy engine and the
@@ -317,6 +318,22 @@ const TOOLS: ToolDef[] = [
       },
     },
   },
+  {
+    name: 'archive_audit',
+    description:
+      'Archive the audit entries older than a cutoff (POST /v1/audit/archive): export them to a JSON ' +
+      'archive file with a chain-verification proof, then prune them from the live chain. The newest ' +
+      'entry is always kept as the chain anchor, so the retained chain stays verifiable — its oldest ' +
+      'entry links to the archive head hash — and the proof is recorded in-chain as an AUDIT_ARCHIVED ' +
+      'entry. At most 10,000 entries per call; moreMayRemain says to call again. Destructive by ' +
+      'design (that is the point of retention), but only the archived slice is pruned.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        beforeMs: { type: 'number', description: 'Epoch-ms cutoff; entries older than this are archived. Omit to use the server retention policy (RVN_AUDIT_RETENTION_DAYS, default 90 days).' },
+      },
+    },
+  },
 ];
 
 interface ToolResult {
@@ -519,6 +536,13 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       const { status, body } = await api(`/v1/audit?limit=${encodeURIComponent(String(limit))}`);
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
+    case 'archive_audit': {
+      const { status, body } = await api('/v1/audit/archive', {
+        method: 'POST',
+        body: JSON.stringify({ ...(typeof args.beforeMs === 'number' ? { beforeMs: args.beforeMs } : {}) }),
+      });
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
     default:
       return textResult({ error: `unknown tool: ${name}` }, true);
   }
@@ -555,7 +579,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.23.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.24.0' },
       });
     }
     case 'notifications/initialized':

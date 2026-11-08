@@ -117,6 +117,32 @@ async function runSuite(label: string, store: Store) {
   ];
   check('tampered chain detected at seq', verifyChain(tampered) === e2.seq, e2.seq);
 
+  // Audit retention (v0.24.0): oldest / beforeMs / prune, with the
+  // anchored verify() of a pruned chain. Runs against both backends.
+  const oldest = await store.audit.oldest();
+  check('audit oldest is the genesis entry', oldest?.seq === 0 && oldest?.prevHash === 'GENESIS', oldest);
+  const aged = await store.audit.beforeMs(Date.now() + 1000);
+  check('audit beforeMs returns entries ascending by seq',
+    aged.length >= 2 && aged[0].seq === 0 && aged.every((e, i) => i === 0 || e.seq > aged[i - 1].seq),
+    aged.map((e) => e.seq));
+  check('audit beforeMs with an ancient cutoff returns nothing',
+    (await store.audit.beforeMs(0)).length === 0);
+  check('audit beforeMs limit is honored',
+    (await store.audit.beforeMs(Date.now() + 1000, 1)).length === 1);
+  const pruned = await store.audit.prune(e2.seq);
+  check('audit prune deletes entries below the cutoff',
+    pruned === e2.seq && (await store.audit.oldest())?.seq === e2.seq,
+    { pruned, oldest: await store.audit.oldest() });
+  check('pruned chain still verifies (anchored at the archived head hash)',
+    (await store.audit.verify()) === -1);
+  const kept = await store.audit.prune(Number.MAX_SAFE_INTEGER);
+  check('prune past the newest keeps the anchor entry',
+    kept === 0 && (await store.audit.oldest())?.seq === e2.seq, { kept });
+  const e3 = await store.audit.append('DECISION', intent.id, intent.agentId, { kind: 'POST_PRUNE' });
+  check('append after a prune chains onto the anchor',
+    e3.seq === e2.seq + 1 && e3.prevHash === e2.hash, e3);
+  check('chain verifies after append-on-pruned-chain', (await store.audit.verify()) === -1);
+
   // Rate-limit buckets: set/get/all round-trip (the v0.20.0 persistence seam).
   await store.ratelimits.set(`${label}-rl-agent`, { tokens: 0.5, updatedMs: 4242 });
   const rl = await store.ratelimits.get(`${label}-rl-agent`);

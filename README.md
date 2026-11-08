@@ -60,6 +60,7 @@ verifies clean.
 | POST | `/v1/intents/:id/deny` | deny a held intent |
 | GET | `/v1/intents/pending` | intents awaiting approval |
 | GET | `/v1/audit` | hash-chained audit trail (`chainValid`) |
+| POST | `/v1/audit/archive` | archive entries older than `beforeMs` (epoch ms; omitted = retention policy, `RVN_AUDIT_RETENTION_DAYS`, default 90 days) to a JSON file with a chain-verification proof, then prune them from the live chain (newest entry always kept as the anchor) |
 | GET | `/v1/policies/:agentId` | fetch an agent's policy |
 | PUT | `/v1/policies/:agentId` | replace an agent's policy |
 | GET | `/v1/policies/presets` | list the policy presets (conservative / balanced / permissive) |
