@@ -173,6 +173,10 @@ chain) lives in process memory — restart the API and it's gone. To persist:
    `NNNN_name.sql` file there and restart — each migration runs in its
    own transaction, and a failed or inconsistent migration stops startup
    with a clear error instead of silently falling back to memory.
+   `audit_entries` is monthly range-partitioned on `at_ms` (one partition
+   per UTC month, created on demand at append time), so time-range reads
+   prune partitions and old months can be archived or dropped as whole
+   partitions; `/v1/health` reports `"audit": { "partitioned": true }`.
 
 If the database is unreachable the API still boots on the in-memory store and
 logs a warning — nothing is persisted in that mode. `pnpm test:store` runs the

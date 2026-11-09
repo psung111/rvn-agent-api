@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import { makeChainedEntry, verifyChain, type AuditEntry, type AuditKind } from '../audit.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
 import { applyMigrations, loadMigrations, type Migration } from './migrations.js';
+import { auditPartitionDdl, auditPartitionFor } from './partitions.js';
 import type { AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
 
 function rowToEntry(r: {
@@ -102,6 +103,12 @@ class PostgresAuditStore implements AuditStore {
       );
       const prev = rows[0] ? rowToEntry(rows[0]) : undefined;
       const entry = makeChainedEntry(prev, kind, intentId, agentId, detail);
+      // The audit table is monthly-partitioned on at_ms (migration 0003):
+      // make sure the entry's month has a partition before inserting, so
+      // a month boundary can never fail an append. Appends are serialized
+      // by the advisory lock above, so two appends can never race the
+      // CREATE; IF NOT EXISTS makes it a no-op in the common case.
+      await client.query(auditPartitionDdl(auditPartitionFor(entry.atMs)));
       await client.query(
         `INSERT INTO audit_entries (seq, prev_hash, hash, at_ms, kind, intent_id, agent_id, detail)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,

@@ -429,6 +429,9 @@ async function main() {
     audit: {
       retentionDays: retention.retentionDays,
       archiveDir: retention.archiveDir,
+      // Monthly partitioning of audit_entries (migration 0003, v0.25.0);
+      // the memory store is never partitioned.
+      partitioned: store.appliedMigrations.includes('0003'),
     },
     approvals: {
       telegramConfigured: approvalNotifier.name === 'telegram',

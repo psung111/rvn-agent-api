@@ -411,7 +411,7 @@ and logs the result in CHANGELOG.md.
   `pnpm test:store`, `pnpm test:webhooks`, `pnpm test:ratelimit`,
   `pnpm test:langchain` still green. Follow-ups: the audit
   partitioning below is the first consumer of a real schema change.
-- [ ] **Audit retention & partitioning** — the v0.7.0 follow-up: as the
+- [x] **Audit retention & partitioning** — the v0.7.0 follow-up: as the
   hash chain grows, partition `audit_entries` by time (monthly
   partitions) and add a retention policy (archive partitions older
   than N days to cold storage with a chain-verification proof, then
@@ -453,6 +453,36 @@ and logs the result in CHANGELOG.md.
     green. Remainder: monthly declarative partitioning of
     `audit_entries` in Postgres (a table-rebuild migration; the
     archive/prune flow already works on the unpartitioned table).
+  - [x] 2026-11-09 — v0.25.0 monthly partitioning (slice 2, item
+    complete): migration `0003_audit_entries_partitioning` rebuilds
+    `audit_entries` as a monthly range-partitioned table on `at_ms`
+    (UTC months, `audit_entries_YYYY_MM`), creating one partition per
+    month holding data plus the current month and the next two, then
+    copying every row, dropping the old table, and renaming — all
+    inside the migration transaction. The primary key becomes
+    `(seq, at_ms)` (a partitioned PK must include the partition key);
+    seq stays unique in practice via the advisory-locked append, and
+    the chain hash remains the integrity check. New
+    `src/store/partitions.ts` — `auditPartitionFor()` (UTC month
+    bounds) and `auditPartitionDdl()` — and `PostgresAuditStore.append`
+    creates the entry's month on demand inside its locked transaction,
+    so a month boundary can never fail an append. `/v1/health`
+    reports `audit.partitioned`. Verified with new
+    `pnpm test:partition` (32 checks, live leg against a real
+    Postgres: rebuild of a pre-existing unpartitioned table preserves
+    every row in its own month's partition, chain verifies, appends
+    land in the current month's partition, a far-future month refuses
+    a raw insert until the DDL runs, prune still works) plus the
+    migration-test updates; demo, mcp-smoke, approvals,
+    telegram-callback, simulate, reissue, subasset, unique, presets,
+    anomaly, store (Postgres leg live for the first time on this VM),
+    webhooks, ratelimit, langchain suites still green. One bug caught
+    by the live dry run and fixed before landing: month arithmetic on
+    `timestamptz` drifts across DST in a non-UTC session timezone and
+    skipped 2025_11 entirely — the migration now iterates on
+    `timestamp` (UTC wall clock) instead. The audit retention &
+    partitioning item is complete; the next top item is the ops
+    metrics endpoint.
 - [ ] **Ops metrics endpoint** — `GET /v1/metrics` (JSON, no new deps):
   decision counts by kind and reason code, rate-limit 429s by agent
   and kind, webhook delivery successes/failures by endpoint, approval

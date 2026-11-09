@@ -1,5 +1,75 @@
 # Changelog
 
+## 2026-11-09 — v0.25.0 (Audit retention & partitioning, slice 2 — item complete)
+
+- Monthly partitioning of `audit_entries` in Postgres, the remainder of
+  the audit retention item. New migration
+  `0003_audit_entries_partitioning`: a table-rebuild migration that
+  creates `audit_entries_new` as `PARTITION BY RANGE (at_ms)` (one
+  partition per UTC calendar month, `audit_entries_YYYY_MM`), creates
+  one partition per month holding data plus the current month and the
+  next two, copies every row, drops the old table, and renames — all
+  inside the migration transaction, so a failure rolls the whole
+  rebuild back. The primary key becomes `(seq, at_ms)`: a partitioned
+  table's PK must include the partition key, so the database no longer
+  enforces seq uniqueness on its own — seq stays unique in practice
+  because the API assigns it serially under the advisory lock in
+  `PostgresAuditStore.append`, and the chain hash remains the real
+  integrity check (`verifyChain` recomputes every hash). The
+  non-unique `audit_entries_intent_id` index is recreated unchanged.
+- New `src/store/partitions.ts`: `auditPartitionFor(atMs)` computes a
+  month's UTC bounds (`Date.UTC`, so it is timezone-independent) and
+  `auditPartitionDdl()` renders the `CREATE TABLE IF NOT EXISTS ...
+  PARTITION OF audit_entries` statement (the name is built from
+  integers only, so interpolating it is safe). `PostgresAuditStore.append`
+  runs that DDL inside its advisory-locked transaction before inserting,
+  so a month boundary can never fail an append — appends are serialized,
+  so two appends can never race the CREATE, and `IF NOT EXISTS` makes
+  it a no-op in the common case. `/v1/health` now reports
+  `audit.partitioned` (true once migration 0003 has applied; false on
+  the memory store).
+- New `pnpm test:partition` (`demo/partition-test.ts`, 32 checks):
+  month-bound unit checks (exact month start, last millisecond of a
+  month, Dec→Jan rollover, leap February, epoch, exact DDL text), the
+  shipped-migration checks, a fake-pool runner apply, and a live leg
+  against a real Postgres — a scratch database built on the old schema
+  (0001+0002) with audit rows from past months, then connected via
+  `PostgresStore.connect` so 0003 rebuilds it: every row survives in
+  its own month's partition, the table reports as partitioned, the
+  chain verifies, a store append lands in the current month's
+  partition, a far-future month refuses a raw insert until the
+  partition DDL runs, and prune still works on the partitioned table.
+  `demo/migration-test.ts` updated for three migrations (including the
+  gap test, which now uses a 0004 stand-in). `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:webhooks`, `pnpm test:ratelimit`,
+  `pnpm test:langchain` still green — and `pnpm test:store`'s
+  Postgres leg ran live for the first time on this VM (a local
+  PostgreSQL 16 was installed from cached packages for the session).
+  `initialize` now reports server version 0.25.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`); README persistence
+  section gained the partitioning note.
+- One bug caught by a live dry run and fixed before landing: month
+  arithmetic on `timestamptz` preserves local wall time, so in a
+  non-UTC session timezone a DST transition drifts the month starts
+  and skips months entirely — the first dry run created partitions
+  whose bounds jumped from Oct 31 to Dec 1 01:00 UTC, never created
+  2025_11, and the copy failed with "no partition of relation found
+  for row". The migration now iterates on `timestamp` (a UTC wall
+  clock; `extract(epoch FROM timestamp)` reads it as UTC, verified
+  live under `TimeZone = 'America/Los_Angeles'`), and the dry run was
+  re-run clean.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:partition` script.
+- The audit retention & partitioning roadmap item is complete; the
+  next top item is the ops metrics endpoint.
+
 ## 2026-11-08 — v0.24.0 (Audit archive + retention pruning, slice 1)
 
 - Audit retention, slice 1 of the audit retention & partitioning item:
