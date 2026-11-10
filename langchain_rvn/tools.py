@@ -262,6 +262,17 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
+    def get_metrics() -> str:
+        """Read ops metrics: decision counts by kind and reason code,
+        rate-limit 429s by agent and kind, webhook delivery successes and
+        failures by endpoint, approval hold age (oldest pending), and the
+        store backend. Read-only."""
+        try:
+            return _dump(client.get_metrics())
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
     def get_audit(limit: int = 50) -> str:
         """Read the tail of the hash-chained audit log with its chain
         validity flag. Use it to verify what actually happened."""
@@ -309,6 +320,7 @@ def build_tools(client: RvnApiClient) -> list:
         apply_preset,
         get_ratelimit,
         get_anomaly_stats,
+        get_metrics,
         get_audit,
         archive_audit,
         create_wallet,

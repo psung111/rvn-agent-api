@@ -33,6 +33,7 @@ import {
   type RvnPolicy,
 } from './policy/index.js';
 import { storeFromEnv, type Store } from './store/index.js';
+import { computeMetrics } from './ops/metrics.js';
 import { notifierFromEnv, telegramConfigFromEnv } from './approvals/notifier.js';
 import { webhookDispatcherFromEnv, type WebhookEvent } from './webhooks/dispatcher.js';
 import { parseCallbackData, formatResolvedMessage, type CallbackAction } from './approvals/callbacks.js';
@@ -185,8 +186,11 @@ async function main() {
 
   /**
    * Deliver a webhook event for an intent. No-op when no webhook URL is
-   * configured; a delivery failure is audited (never thrown into the
-   * request that produced the event), mirroring approval notifications.
+   * configured; each endpoint's outcome is audited separately (v0.26.0)
+   * — WEBHOOK_DELIVERY / WEBHOOK_DELIVERY_FAILED with the endpoint URL —
+   * so GET /v1/metrics can report deliveries by endpoint. A delivery
+   * failure is audited, never thrown into the request that produced the
+   * event, mirroring approval notifications.
    */
   const deliverWebhook = async (
     event: WebhookEvent,
@@ -194,16 +198,16 @@ async function main() {
     extra: { decision?: Decision; txid?: string; error?: string } = {},
   ): Promise<void> => {
     if (!webhookDispatcher.enabled) return;
-    try {
-      const delivered = await webhookDispatcher.deliver(event, intent, extra);
-      if (delivered > 0) {
-        await store.audit.append('WEBHOOK_DELIVERY', intent.id, intent.agentId, { event });
-      }
-    } catch (err) {
-      app.log.error({ intentId: intent.id, event }, `webhook delivery failed: ${(err as Error).message}`);
+    const { delivered, failed } = await webhookDispatcher.deliverDetailed(event, intent, extra);
+    for (const endpoint of delivered) {
+      await store.audit.append('WEBHOOK_DELIVERY', intent.id, intent.agentId, { event, endpoint });
+    }
+    for (const endpoint of failed) {
+      app.log.error({ intentId: intent.id, event, endpoint }, 'webhook delivery failed');
       await store.audit.append('WEBHOOK_DELIVERY_FAILED', intent.id, intent.agentId, {
         event,
-        error: (err as Error).message,
+        endpoint,
+        error: 'endpoint did not accept the event after retries',
       });
     }
   };
@@ -445,6 +449,28 @@ async function main() {
     },
     ...(await node.getInfo()),
   }));
+
+  /**
+   * Ops metrics (read-only, v0.26.0): decision counts by kind and reason
+   * code, rate-limit 429s by agent and kind, webhook delivery
+   * successes/failures by endpoint, approval hold age (oldest pending),
+   * and the store backend — so an operator can monitor the API without
+   * scraping the audit log. Derived from the retained audit chain at
+   * request time; the read writes nothing (no intents, no audit entries),
+   * so polling it cannot change what the next submit sees. Counts cover
+   * the retained chain only — archived slices are in the archive files.
+   */
+  app.get('/v1/metrics', async () => {
+    const nowMs = Date.now();
+    const entries = await store.audit.all();
+    const pending = await store.intents.pending(nowMs);
+    const chainValid = (await store.audit.verify()) === -1;
+    return computeMetrics(entries, pending, nowMs, {
+      storeKind: store.kind,
+      chainValid,
+      uptimeSeconds: process.uptime(),
+    });
+  });
 
   app.post('/v1/wallets', async () => {
     const address = await node.getNewAddress(`agent-${Date.now()}`);

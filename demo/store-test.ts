@@ -129,6 +129,12 @@ async function runSuite(label: string, store: Store) {
     (await store.audit.beforeMs(0)).length === 0);
   check('audit beforeMs limit is honored',
     (await store.audit.beforeMs(Date.now() + 1000, 1)).length === 1);
+  // Ops metrics (v0.26.0): all() returns every retained entry ascending.
+  const allEntries = await store.audit.all();
+  check('audit all() returns every entry ascending by seq',
+    allEntries.length >= 2 && allEntries[0].seq === 0 &&
+      allEntries.every((e, i) => i === 0 || e.seq > allEntries[i - 1].seq),
+    allEntries.map((e) => e.seq));
   const pruned = await store.audit.prune(e2.seq);
   check('audit prune deletes entries below the cutoff',
     pruned === e2.seq && (await store.audit.oldest())?.seq === e2.seq,

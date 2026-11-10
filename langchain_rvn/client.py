@@ -308,6 +308,15 @@ class RvnApiClient:
             query={"windowHours": str(window_hours)},
         )
 
+    # -- ops metrics ----------------------------------------------------
+
+    def get_metrics(self) -> dict[str, Any]:
+        """Read-only ops metrics: decision counts by kind and reason code,
+        rate-limit 429s by agent and kind, webhook delivery successes and
+        failures by endpoint, approval hold age (oldest pending), and the
+        store backend."""
+        return self._call("GET", "/v1/metrics")
+
     # -- audit ------------------------------------------------------------
 
     def get_audit(self, limit: int = 50) -> dict[str, Any]:

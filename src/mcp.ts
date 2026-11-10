@@ -21,6 +21,7 @@
  *   - apply_preset     -> POST /v1/policies/:agentId/preset
  *   - get_ratelimit    -> GET  /v1/ratelimit/:agentId
  *   - get_anomaly_stats -> GET /v1/anomaly/:agentId
+ *   - get_metrics      -> GET  /v1/metrics
  *   - archive_audit    -> POST /v1/audit/archive
  *
  * The MCP server is only a transport: the REST API stays the single
@@ -299,6 +300,18 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'get_metrics',
+    description:
+      'Read ops metrics (GET /v1/metrics): decision counts by kind and reason code, rate-limit 429s ' +
+      'by agent and kind, webhook delivery successes/failures by endpoint, approval hold age (oldest ' +
+      'pending), and the store backend. Read-only — the read writes nothing to the audit chain, so ' +
+      'polling it cannot change what the next submit sees.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'list_assets',
     description: 'List assets known to the node, optionally filtered by a glob pattern.',
     inputSchema: {
@@ -526,6 +539,10 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       );
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
+    case 'get_metrics': {
+      const { status, body } = await api('/v1/metrics');
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
     case 'list_assets': {
       const pattern = typeof args.pattern === 'string' && args.pattern ? args.pattern : '*';
       const { status, body } = await api(`/v1/assets?pattern=${encodeURIComponent(pattern)}`);
@@ -579,7 +596,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.25.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.26.0' },
       });
     }
     case 'notifications/initialized':

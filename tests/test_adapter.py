@@ -122,13 +122,13 @@ def main():
         # --- LangChain tools ---
         tools = get_tools(client)
         by_name = {t.name: t for t in tools}
-        check("20 tools built", len(tools) == 20, sorted(by_name))
+        check("21 tools built", len(tools) == 21, sorted(by_name))
         check("tool names cover every route",
               {"issue_asset", "reissue_asset", "issue_subasset", "issue_unique",
                "transfer_asset", "list_assets", "get_asset", "simulate_intent",
                "approve_intent", "deny_intent", "pending_intents", "get_policy",
                "set_policy", "list_presets", "apply_preset", "get_ratelimit",
-               "get_anomaly_stats", "get_audit", "archive_audit",
+               "get_anomaly_stats", "get_metrics", "get_audit", "archive_audit",
                "create_wallet"} == set(by_name))
         stats = client.get_ratelimit()
         check("client get_ratelimit: unlimited agent reports limited:false",
@@ -147,6 +147,18 @@ def main():
               and tool_anom.get("bySignal") == {"QTY_OUTLIER": 0,
                                                  "FIRST_SEEN_DESTINATION_BURST": 0},
               tool_anom)
+        metrics = client.get_metrics()
+        check("client get_metrics: decisions counted, memory store, chain valid",
+              metrics.get("store") == "memory"
+              and metrics.get("audit", {}).get("chainValid") is True
+              and metrics.get("decisions", {}).get("total", 0) >= 1
+              and metrics.get("decisions", {}).get("byKind", {}).get("ALLOW", 0) >= 1,
+              metrics)
+        tool_metrics = json.loads(by_name["get_metrics"].invoke({}))
+        check("tool get_metrics matches the client shape",
+              tool_metrics.get("decisions", {}).get("total") ==
+              metrics.get("decisions", {}).get("total")
+              and tool_metrics.get("store") == "memory", tool_metrics)
 
         tool_issue = json.loads(by_name["issue_asset"].invoke(
             {"name": "TOOLCOIN", "qty": "50", "to_address": DEST}))

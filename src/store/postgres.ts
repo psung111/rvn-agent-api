@@ -131,6 +131,12 @@ class PostgresAuditStore implements AuditStore {
     );
     return rows.map(rowToEntry);
   }
+  async all(): Promise<AuditEntry[]> {
+    const { rows } = await this.pool.query(
+      'SELECT seq, prev_hash, hash, at_ms, kind, intent_id, agent_id, detail FROM audit_entries ORDER BY seq ASC',
+    );
+    return rows.map(rowToEntry);
+  }
   async verify(): Promise<number> {
     const { rows } = await this.pool.query(
       'SELECT seq, prev_hash, hash, at_ms, kind, intent_id, agent_id, detail FROM audit_entries ORDER BY seq ASC',

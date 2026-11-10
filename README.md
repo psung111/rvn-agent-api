@@ -67,6 +67,7 @@ verifies clean.
 | POST | `/v1/policies/:agentId/preset` | apply a preset to an agent, with optional per-agent `overrides` |
 | GET | `/v1/ratelimit/:agentId` | rate-limit stats for an agent (read-only) |
 | GET | `/v1/anomaly/:agentId?windowHours=` | anomaly stats for an agent: holds raised by signal, holds still pending, thresholds in force (read-only) |
+| GET | `/v1/metrics` | ops metrics: decision counts by kind and reason code, rate-limit 429s by agent and kind, webhook deliveries by endpoint, approval hold age, store backend (read-only) |
 
 Policy defaults (`src/policy/presets.ts`): per-issue cap 100k units, approval above
 10k, 24h issue budget 500k, transfers to unknown destinations require approval,

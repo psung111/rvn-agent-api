@@ -33,6 +33,8 @@ export interface AuditStore {
   ): Promise<AuditEntry>;
   /** Newest first. */
   tail(limit?: number): Promise<AuditEntry[]>;
+  /** Every retained entry, ascending by seq (for ops metrics aggregation). */
+  all(): Promise<AuditEntry[]>;
   /** First broken seq, or -1 when the chain is intact. */
   verify(): Promise<number>;
   /** Oldest retained entry, or undefined when the chain is empty. */

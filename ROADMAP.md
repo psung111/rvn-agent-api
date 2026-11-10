@@ -483,14 +483,47 @@ and logs the result in CHANGELOG.md.
     `timestamp` (UTC wall clock) instead. The audit retention &
     partitioning item is complete; the next top item is the ops
     metrics endpoint.
-- [ ] **Ops metrics endpoint** — `GET /v1/metrics` (JSON, no new deps):
-  decision counts by kind and reason code, rate-limit 429s by agent
-  and kind, webhook delivery successes/failures by endpoint, approval
-  hold age (oldest pending), and the store backend — so an operator
-  can monitor the API without scraping the audit log. Read-only and
-  unauthenticated like `/v1/health` (localhost-only bind is the
-  existing posture); keep the payload free of policy internals and
-  secrets.
+- [x] 2026-11-10 — v0.26.0 Ops metrics endpoint (item complete): new
+  `GET /v1/metrics` (JSON, no new deps) — decision counts by kind and
+  reason code, rate-limit 429s by agent and kind, webhook delivery
+  successes/failures by endpoint, approval hold age (oldest pending),
+  and the store backend — so an operator can monitor the API without
+  scraping the audit log. Read-only and unauthenticated like
+  `/v1/health`; the payload carries no policy internals and no secrets.
+  New `src/ops/metrics.ts` — pure `computeMetrics()` aggregates the
+  retained audit chain at request time (DECISION entries with a real
+  decision kind; POLICY_REPLACED policy-update entries excluded;
+  approval-time re-evaluation DENYs counted, approvals themselves write
+  no DECISION entry so they change nothing; 429s from the
+  RATE_LIMIT_EXCEEDED reason code grouped by agent and intent kind;
+  webhook entries grouped by endpoint URL, with pre-v0.26.0 entries
+  that carry no endpoint counted under `unknown`). Counts cover the
+  retained chain only — archived slices live in the archive files —
+  and the response says so via `audit.entries`. New `AuditStore.all()`
+  seam (both backends; `AuditLog.all()` in-memory) supplies the entries.
+  Per-endpoint webhook counts needed the audit to record the endpoint:
+  `WebhookDispatcher` gained `deliverDetailed()` (per-endpoint outcomes;
+  a throwing sender marks that endpoint failed instead of aborting the
+  fan-out) alongside the unchanged `deliver()` (same throw/count
+  behavior, now sharing the extracted `attemptEndpoint` retry loop), and
+  the server audits one WEBHOOK_DELIVERY / WEBHOOK_DELIVERY_FAILED entry
+  per endpoint with `{ event, endpoint }` — a partial failure now
+  records both the delivered and the failed endpoints instead of one
+  FAILED entry for the whole event. New `get_metrics` MCP tool and
+  LangChain client method + tool (21 tools now), keeping the "adapters
+  cover every route" invariant. Verified with new `pnpm test:metrics`
+  (`demo/metrics-test.ts`, 30 checks: computeMetrics units incl.
+  malformed detail, a booted-API integration — fresh zeros, ALLOW/DENY/
+  hold counts with the right reason codes, POLICY_REPLACED exclusion,
+  approve writes no DECISION entry, exactly one 429 by agent and kind,
+  read purity — plus a stub-receiver integration proving delivered then
+  failed counts per endpoint URL), new `all()` checks in
+  `pnpm test:store`, an MCP smoke section, and `pnpm test:langchain`
+  (21 tools, client + tool metrics shape); demo, mcp-smoke, approvals,
+  telegram-callback, simulate, reissue, subasset, unique, presets,
+  anomaly, store, archive, migrations, partition, webhooks, ratelimit
+  suites still green. The ops metrics item is complete; the next top
+  item is multi-approver quorum.
 - [ ] **Multi-approver quorum for high-value holds** — a second,
   higher approval threshold in policy: intents above it need N of M
   distinct approvers instead of one. Telegram buttons count distinct

@@ -128,4 +128,9 @@ export class AuditLog {
   tail(limit = 50): AuditEntry[] {
     return this.entries.slice(-Math.min(limit, 500)).reverse();
   }
+
+  /** Every retained entry, ascending by seq. */
+  all(): AuditEntry[] {
+    return [...this.entries];
+  }
 }

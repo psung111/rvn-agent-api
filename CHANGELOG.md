@@ -1,5 +1,83 @@
 # Changelog
 
+## 2026-11-10 — v0.26.0 (Ops metrics endpoint, item complete)
+
+- New `GET /v1/metrics` (JSON, no new deps): decision counts by kind
+  and reason code, rate-limit 429s by agent and kind, webhook delivery
+  successes/failures by endpoint, approval hold age (oldest pending),
+  and the store backend — so an operator can monitor the API without
+  scraping the audit log. Read-only and unauthenticated like
+  `/v1/health` (localhost-only bind is the existing posture); the
+  payload carries no policy internals and no secrets (agent ids, intent
+  kinds, reason codes, webhook endpoint URLs, counts only).
+- New `src/ops/metrics.ts`: pure `computeMetrics()` aggregates the
+  retained audit chain at request time, so the counts survive a restart
+  and describe exactly what the durable record says. DECISION entries
+  count only when their detail kind is a real decision kind (ALLOW /
+  REQUIRE_APPROVAL / DENY) — the POLICY_REPLACED entries written by
+  policy PUTs and preset applies are excluded. Approval-time
+  re-evaluation DENYs are counted (they are DECISION entries); an
+  approval itself writes no DECISION entry, so approving a hold changes
+  nothing. Rate-limit 429s come from the RATE_LIMIT_EXCEEDED reason
+  code, grouped by agent and intent kind. Webhook entries group by
+  endpoint URL; entries written before v0.26.0 carry no endpoint and
+  count under `unknown`. Counts cover the retained chain only — archived
+  slices live in the archive files — and the response reports the
+  retained length as `audit.entries`, plus `chainValid`, `uptimeSeconds`,
+  and `generatedAtMs`. Malformed detail (non-string kind, non-array
+  reasonCodes, missing op/endpoint) degrades to skip/unknown, never a
+  crash. The route reads `store.audit.all()` + `store.intents.pending()`
+  and writes nothing, so polling it cannot change what the next submit
+  sees.
+- New `AuditStore.all()` seam (both backends; `AuditLog.all()` in the
+  memory store): every retained entry ascending by seq, for the metrics
+  aggregation.
+- Per-endpoint webhook audit (the metrics need it): `WebhookDispatcher`
+  gained `deliverDetailed()` returning the delivered/failed URL lists
+  per event; the shared per-endpoint retry loop is now `attemptEndpoint`
+  (used by the unchanged `deliver()`, which keeps its throw-after-
+  retries and attempted-count behavior). A sender that throws marks
+  that endpoint failed in `deliverDetailed()` instead of aborting the
+  fan-out. The server now audits one WEBHOOK_DELIVERY /
+  WEBHOOK_DELIVERY_FAILED entry per endpoint with `{ event, endpoint }`
+  — a partial failure records both the delivered and the failed
+  endpoints, where the old code audited a single FAILED entry for the
+  whole event and lost the successes.
+- Adapters keep the "cover every route" invariant: new `get_metrics`
+  MCP tool and LangChain client method + tool (`langchain_rvn` now
+  builds 21 tools). `initialize` now reports server version 0.26.0
+  (`src/mcp.ts`, `package.json`, `langchain_rvn/pyproject.toml`);
+  README route table gained the metrics row.
+- New `pnpm test:metrics` (`demo/metrics-test.ts`, 30 checks):
+  `computeMetrics` units (empty chain, decision/reason counts,
+  POLICY_REPLACED and non-string-kind exclusion, 429s by agent and
+  kind, webhook counts by endpoint incl. the `unknown` bucket, oldest-
+  hold age math, malformed detail, store/chain/uptime pass-through);
+  a booted-API integration (fresh zeros; ALLOW/DENY/hold counted with
+  the right reason codes; policy PUTs do not inflate the counts;
+  approving the hold writes no DECISION entry; a 1-op bucket produces
+  exactly one 429 counted by agent and kind; two consecutive reads
+  report the same audit entry count); and a stub-receiver integration
+  (decided + executed delivered per endpoint URL, then 2 failed after
+  the receiver goes down, delivered count unchanged). `pnpm test:store`
+  gained `all()` checks in the shared suite (both backends);
+  `demo/mcp-smoke.ts` gained a metrics section (2 checks);
+  `pnpm test:langchain` updated (21 tools, client + tool metrics
+  shape). `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`, `pnpm test:partition`,
+  `pnpm test:webhooks`, `pnpm test:ratelimit`,
+  `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:metrics` script.
+- The ops metrics roadmap item is complete; the next top item is
+  multi-approver quorum.
+
 ## 2026-11-09 — v0.25.0 (Audit retention & partitioning, slice 2 — item complete)
 
 - Monthly partitioning of `audit_entries` in Postgres, the remainder of

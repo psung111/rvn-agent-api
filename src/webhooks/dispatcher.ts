@@ -320,6 +320,30 @@ export class WebhookDispatcher {
   }
 
   /**
+   * One endpoint, with retries: true when an attempt came back ok, false
+   * when every attempt failed. A sender that throws (network error)
+   * propagates — `deliver()` keeps that behavior, `deliverDetailed()`
+   * catches it per endpoint instead.
+   */
+  private async attemptEndpoint(config: WebhookConfig, body: string, event: WebhookEvent): Promise<boolean> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      'x-rvn-event': event,
+      ...(config.secret ? { 'x-rvn-signature': signPayload(config.secret, body) } : {}),
+    };
+    // Retries with exponential backoff per the effective retry options;
+    // then give up on this endpoint — the caller audits the failure and
+    // never fails the original request.
+    const retry = resolveWebhookRetry(this.retry, config.retry);
+    for (let attempt = 1; ; attempt++) {
+      const { ok } = await this.sender(config.url, body, headers);
+      if (ok) return true;
+      if (attempt >= retry.maxAttempts) return false;
+      await this.sleep(retryDelayMs(retry, attempt));
+    }
+  }
+
+  /**
    * Deliver one event to every subscribed endpoint. Returns the number of
    * endpoints attempted (0 when no endpoint subscribes to the event).
    * A failure at one endpoint never blocks the others; after all attempts,
@@ -336,31 +360,42 @@ export class WebhookDispatcher {
     const body = JSON.stringify(buildWebhookPayload(event, intent, extra));
     const failed: string[] = [];
     for (const config of targets) {
-      const headers: Record<string, string> = {
-        'content-type': 'application/json',
-        'x-rvn-event': event,
-        ...(config.secret ? { 'x-rvn-signature': signPayload(config.secret, body) } : {}),
-      };
-      // Retries with exponential backoff per the effective retry options;
-      // then give up on this endpoint — the caller audits the failure and
-      // never fails the original request.
-      const retry = resolveWebhookRetry(this.retry, config.retry);
-      let delivered = false;
-      for (let attempt = 1; ; attempt++) {
-        const { ok, status } = await this.sender(config.url, body, headers);
-        if (ok) {
-          delivered = true;
-          break;
-        }
-        if (attempt >= retry.maxAttempts) break;
-        await this.sleep(retryDelayMs(retry, attempt));
-      }
-      if (!delivered) failed.push(config.url);
+      if (!(await this.attemptEndpoint(config, body, event))) failed.push(config.url);
     }
     if (failed.length > 0) {
       throw new Error(`webhook delivery failed for ${failed.length} endpoint(s): ${failed.join(', ')}`);
     }
     return targets.length;
+  }
+
+  /**
+   * Per-endpoint outcomes for one event: the URLs that accepted it and
+   * the URLs that gave up after retries. Unlike `deliver()`, a sender
+   * that throws marks that endpoint failed instead of aborting the
+   * fan-out, and nothing throws — the caller audits each endpoint's
+   * outcome separately (v0.26.0: WEBHOOK_DELIVERY / WEBHOOK_DELIVERY_FAILED
+   * entries carry the endpoint URL, so GET /v1/metrics can report
+   * deliveries by endpoint). No-op when unconfigured.
+   */
+  async deliverDetailed(
+    event: WebhookEvent,
+    intent: RvnIntent,
+    extra: { decision?: Decision; txid?: string; error?: string } = {},
+  ): Promise<{ delivered: string[]; failed: string[] }> {
+    const targets = this.endpointsFor(event);
+    if (targets.length === 0) return { delivered: [], failed: [] };
+    const body = JSON.stringify(buildWebhookPayload(event, intent, extra));
+    const delivered: string[] = [];
+    const failed: string[] = [];
+    for (const config of targets) {
+      try {
+        if (await this.attemptEndpoint(config, body, event)) delivered.push(config.url);
+        else failed.push(config.url);
+      } catch {
+        failed.push(config.url);
+      }
+    }
+    return { delivered, failed };
   }
 }
 

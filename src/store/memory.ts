@@ -57,6 +57,9 @@ class MemoryAuditStore implements AuditStore {
   async tail(limit = 50): Promise<AuditEntry[]> {
     return this.log.tail(limit);
   }
+  async all(): Promise<AuditEntry[]> {
+    return this.log.all();
+  }
   async verify(): Promise<number> {
     return this.log.verify();
   }

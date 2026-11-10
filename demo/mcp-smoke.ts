@@ -22,6 +22,7 @@
  *   17-18. rate-limit stats / per-kind buckets via MCP
  *   19. anomaly stats via MCP
  *   20. archive_audit via MCP (ancient cutoff: archives nothing, writes nothing)
+ *   21. get_metrics via MCP (decision counts reflect the session's submits, read-only)
  *
  * Usage: pnpm mcp-smoke   (API must be running, default http://localhost:3001)
  */
@@ -373,6 +374,23 @@ async function main(): Promise<void> {
   const archNone = await toolCall('archive_audit', { beforeMs: 1 });
   check('archive_audit via MCP with an ancient cutoff archives nothing',
     archNone.ok && archNone.body.archived === false && archNone.body.entries === 0, archNone.body);
+
+  // 21. get_metrics via MCP (v0.26.0) — the session above submitted
+  // ALLOWs, DENYs and holds, so the counts are non-zero; the tool takes
+  // no arguments and the read writes nothing.
+  const metrics = await toolCall('get_metrics', {});
+  check('get_metrics via MCP reports decision counts, store, and chain validity',
+    metrics.ok && metrics.body.store === 'memory' &&
+    metrics.body.audit?.chainValid === true &&
+    typeof metrics.body.decisions?.total === 'number' &&
+    metrics.body.decisions.total > 0 &&
+    typeof metrics.body.approvals?.pending === 'number' &&
+    typeof metrics.body.rateLimit429s?.total === 'number' &&
+    typeof metrics.body.webhooks?.byEndpoint === 'object', metrics.body);
+  const metricsAgain = await toolCall('get_metrics', {});
+  check('get_metrics via MCP is pure (same audit entry count on re-read)',
+    metricsAgain.ok &&
+    metricsAgain.body.audit?.entries === metrics.body.audit?.entries, metricsAgain.body);
 
   child.kill();
   shuttingDown = true;
