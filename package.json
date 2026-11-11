@@ -36,7 +36,8 @@
     "test:webhooks": "tsx demo/webhook-test.ts",
     "test:ratelimit": "tsx demo/ratelimit-test.ts",
     "test:metrics": "tsx demo/metrics-test.ts",
+    "test:quorum": "tsx demo/quorum-test.ts",
     "test:langchain": "python3 tests/test_adapter.py"
   },
-  "version": "0.26.0"
+  "version": "0.27.0"
 }

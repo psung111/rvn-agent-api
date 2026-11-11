@@ -1,5 +1,90 @@
 # Changelog
 
+## 2026-11-11 — v0.27.0 (Multi-approver quorum, slice 1 — item partial)
+
+- Multi-approver quorum for high-value holds, slice 1: policy fields
+  plus approval counting on the HTTP approve path (the Telegram button
+  path shares the same resolution code, so distinct-approver counting
+  rides along). New optional policy fields — `quorumApprovals`
+  (distinct approvers required, integer >= 2), `quorumAboveIssueQtyBaseUnits`
+  and `quorumAboveTransferQtyBaseUnits` (non-negative integer decimal
+  strings): intents whose qty sits above the applicable threshold need
+  N distinct approvers instead of one; below it a single approver
+  still suffices, so every existing flow is unchanged.
+- New `src/policy/quorum.ts`, following the established lenient/strict
+  split: `quorumConfigFromPolicy()` resolves a stored policy leniently
+  (quorum is active only when the count is an integer >= 2 AND at least
+  one threshold parses — a count of 1, a missing side, or a malformed
+  threshold degrades to no quorum, never a crash), and
+  `validateQuorumFields()` rejects strictly on PUT and preset
+  overrides (count below 2, a count with no threshold, a threshold
+  with no count, malformed/negative thresholds all 400, nothing
+  stored). `applyPreset` accepts all three fields as overrides with
+  the same checks.
+- `evaluateIntent` marks quorum holds on the decision itself
+  (`Decision.quorumRequired: N`): the count is attached to every
+  REQUIRE_APPROVAL decision whose qty is above the quorum threshold,
+  whatever else held it, and a would-be-ALLOW intent above the
+  threshold is held with reason code `QUORUM_REQUIRED` instead of
+  being allowed. The stored decision is the authority at approval
+  time, so a policy change after the hold can neither silently drop
+  nor add a quorum.
+- `resolveApproval` counts distinct approver identities on the stored
+  decision (`Decision.approvals`, persisted with the decision in both
+  the memory and Postgres stores, so a restart cannot lose the count):
+  the first approval returns 202 with `approvalsReceived` /
+  `approvalsRequired` and executes nothing; the same approver approving
+  again returns 202 with `alreadyCounted: true` and the count
+  unchanged; the Nth distinct approver re-evaluates and executes
+  (200 + txid, with the full count in the response). A deny by any
+  single approver still ends the hold outright. Each recorded approval
+  is audited as an `APPROVAL` entry carrying the running count. The
+  Telegram webhook answers a partial approval with an n/N toast and
+  leaves the hold message up (only a final 200 edits it); a tap from
+  the same `telegram:<name>` identity counts once, so one person
+  tapping Approve twice cannot meet a quorum alone. `simulate`
+  reports the quorum decision with zero side effects, like every other
+  gate.
+- Adapters keep the "cover every route" invariant with no new tool:
+  the MCP `approve_intent` and LangChain `approve_intent` already
+  proxy the route (a 202 is a success, not an error), and their
+  descriptions now name the quorum progress. `initialize` now reports
+  server version 0.27.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README approve row gained the
+  quorum note.
+- New `pnpm test:quorum` (`demo/quorum-test.ts`, 57 checks):
+  parse/validate units (lenient degradation, strict rejections incl.
+  half-configured quorums); PUT 400s that leave the stored policy
+  untouched and the same validation on preset overrides; a
+  below-threshold hold executing on one approval with no
+  `quorumRequired`; a quorum hold — 202 with 1/2 and no txid, still
+  pending, no supply created, repeat approval still 1, second distinct
+  approver executes 2/2 and the hold leaves pending, re-approve 409;
+  a single deny ending a quorum hold; a transfer above the transfer
+  quorum threshold (but below the approval threshold) holding with
+  `QUORUM_REQUIRED` and executing on the second approver; simulate
+  reporting the quorum decision with no audit entries and no pending
+  intent, and a 404 on approving the simulated id; chain valid at the
+  end. `demo/mcp-smoke.ts` gained a quorum section (5 checks: set
+  policy, hold with quorumRequired 2, first approval 202 1/2, repeat
+  still 1, second approver executes). `pnpm test:langchain` updated
+  (21 tools, approve docstring) — all green. `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:quorum` script.
+- Remainder of the multi-approver quorum item: an approver roster (M)
+  — a policy-defined set of approver identities, so only roster
+  members count toward quorum.
+
 ## 2026-11-10 — v0.26.0 (Ops metrics endpoint, item complete)
 
 - New `GET /v1/metrics` (JSON, no new deps): decision counts by kind

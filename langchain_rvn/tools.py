@@ -161,7 +161,11 @@ def build_tools(client: RvnApiClient) -> list:
     def approve_intent(intent_id: str, approver: str = "human") -> str:
         """Approve a held intent. The intent executes on the node (unless
         re-evaluation denies it) and returns its txid. Only call this after
-        a human has approved the hold — it moves real funds/supply."""
+        a human has approved the hold — it moves real funds/supply. For a
+        quorum hold, one approval returns the progress
+        (approvalsReceived/approvalsRequired) instead of a txid until N
+        distinct approvers have approved; the same approver twice counts
+        once."""
         try:
             return _dump(client.approve_intent(intent_id, approver))
         except RvnApiError as err:

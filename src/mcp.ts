@@ -183,7 +183,10 @@ const TOOLS: ToolDef[] = [
     description:
       'Approve a held REQUIRE_APPROVAL intent (POST /v1/intents/:id/approve). ' +
       'The API re-evaluates policy at approval time; a DENY on re-evaluation ' +
-      'or an expired decision returns an error. Returns the execution txid on success.',
+      'or an expired decision returns an error. Returns the execution txid on success. ' +
+      'For a quorum hold (decision quorumRequired N), one approval returns 202 with ' +
+      'approvalsReceived/approvalsRequired until N distinct approvers have approved — ' +
+      'the same approver twice counts once — and only the Nth executes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -236,7 +239,7 @@ const TOOLS: ToolDef[] = [
         agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
         policy: {
           type: 'object',
-          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited), rateLimitKindLimits (per-kind { maxOps, windowSeconds } buckets, e.g. { issue_asset: { maxOps: 2, windowSeconds: 3600 } }), and anomalyQtyMultiple / anomalyMinHistory / anomalyBurstWindowSeconds / anomalyBurstMinCount (positive integers tuning the anomaly gate; unset keeps the defaults 10 / 3 / 3600 / 3).',
+          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited), rateLimitKindLimits (per-kind { maxOps, windowSeconds } buckets, e.g. { issue_asset: { maxOps: 2, windowSeconds: 3600 } }), anomalyQtyMultiple / anomalyMinHistory / anomalyBurstWindowSeconds / anomalyBurstMinCount (positive integers tuning the anomaly gate; unset keeps the defaults 10 / 3 / 3600 / 3), and quorumApprovals (integer >= 2) with quorumAboveIssueQtyBaseUnits / quorumAboveTransferQtyBaseUnits (non-negative integer decimal strings; a count with no threshold, or vice versa, is rejected).',
         },
       },
       required: ['policy'],
@@ -596,7 +599,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.26.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.27.0' },
       });
     }
     case 'notifications/initialized':

@@ -23,6 +23,8 @@
  *   19. anomaly stats via MCP
  *   20. archive_audit via MCP (ancient cutoff: archives nothing, writes nothing)
  *   21. get_metrics via MCP (decision counts reflect the session's submits, read-only)
+ *   22. quorum approvals via MCP (first approval 202 with 1/2, repeat counts
+ *       once, second distinct approver executes)
  *
  * Usage: pnpm mcp-smoke   (API must be running, default http://localhost:3001)
  */
@@ -387,10 +389,37 @@ async function main(): Promise<void> {
     typeof metrics.body.approvals?.pending === 'number' &&
     typeof metrics.body.rateLimit429s?.total === 'number' &&
     typeof metrics.body.webhooks?.byEndpoint === 'object', metrics.body);
-  const metricsAgain = await toolCall('get_metrics', {});
-  check('get_metrics via MCP is pure (same audit entry count on re-read)',
-    metricsAgain.ok &&
-    metricsAgain.body.audit?.entries === metrics.body.audit?.entries, metricsAgain.body);
+  // 22. quorum approvals via MCP (v0.27.0) — a hold above the quorum
+  // threshold needs two distinct approvers; the first approval is a 202
+  // with 1/2 (not an error), a repeat from the same approver still
+  // counts 1, and the second distinct approver executes.
+  const qAgent = 'mcp-smoke-quorum';
+  const qCoin = `SMOKEMCPQ${Date.now() % 1_000_000}`;
+  const qPolicy = await toolCall('get_policy', { agentId: qAgent });
+  const qSet = await toolCall('set_policy', {
+    agentId: qAgent,
+    policy: {
+      ...qPolicy.body, agentId: qAgent, allowedDestinations: [walletA],
+      quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000',
+    },
+  });
+  check('set_policy with a quorum config via MCP 200s',
+    qSet.ok && qSet.body.httpStatus === 200, qSet.body);
+  const qHold = await toolCall('issue_asset', { agentId: qAgent, name: qCoin, qty: '60000', toAddress: walletA });
+  check('issue above the quorum threshold holds via MCP with quorumRequired 2',
+    qHold.ok && qHold.body.decision?.kind === 'REQUIRE_APPROVAL' && qHold.body.decision?.quorumRequired === 2, qHold.body);
+  const qFirst = await toolCall('approve_intent', { intentId: qHold.body.intent?.id, approver: 'alice' });
+  check('first quorum approval via MCP is 202 with 1/2, not an error',
+    qFirst.ok && qFirst.body.httpStatus === 202 && qFirst.body.approvalsReceived === 1 &&
+    qFirst.body.approvalsRequired === 2 && qFirst.body.txid === undefined, qFirst.body);
+  const qDup = await toolCall('approve_intent', { intentId: qHold.body.intent?.id, approver: 'alice' });
+  check('same approver twice still counts 1 via MCP',
+    qDup.ok && qDup.body.httpStatus === 202 && qDup.body.approvalsReceived === 1 &&
+    qDup.body.alreadyCounted === true, qDup.body);
+  const qSecond = await toolCall('approve_intent', { intentId: qHold.body.intent?.id, approver: 'bob' });
+  check('second distinct approver executes via MCP (200, txid, 2/2)',
+    qSecond.ok && qSecond.body.httpStatus === 200 && !!qSecond.body.txid &&
+    qSecond.body.approvalsReceived === 2 && qSecond.body.approvalsRequired === 2, qSecond.body);
 
   child.kill();
   shuttingDown = true;

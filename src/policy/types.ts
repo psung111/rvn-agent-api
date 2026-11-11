@@ -94,6 +94,22 @@ export interface RvnPolicy {
   anomalyBurstWindowSeconds?: number;
   /** Minimum intents in the burst window before a first-seen destination flags (default 3). */
   anomalyBurstMinCount?: number;
+  /**
+   * Optional multi-approver quorum (v0.27.0): a second, higher approval
+   * threshold. Intents whose qty sits above the quorum threshold need
+   * `quorumApprovals` distinct approvers instead of one; below it a
+   * single approver still suffices. All three fields follow the
+   * all-or-nothing rule: a count with no threshold (or vice versa) is
+   * rejected on PUT / preset overrides, and a stored policy missing
+   * either side degrades to no quorum, so older policies keep working
+   * unchanged.
+   */
+  /** Distinct approvers required for a quorum hold (must be >= 2). */
+  quorumApprovals?: number;
+  /** Supply-creating qty above this needs quorum (issue/reissue/sub-asset/unique). */
+  quorumAboveIssueQtyBaseUnits?: string;
+  /** Transfer qty above this needs quorum. */
+  quorumAboveTransferQtyBaseUnits?: string;
 }
 
 export interface Decision {
@@ -103,6 +119,21 @@ export interface Decision {
   reasonCodes: string[];
   decidedAtMs: number;
   expiresAtMs: number;
+  /**
+   * Multi-approver quorum (v0.27.0): distinct approvers required before
+   * this held intent may execute. Set by the policy engine when the
+   * intent's qty sits above the policy's quorum threshold; absent means
+   * the normal single-approver flow. The stored decision is the authority
+   * at approval time, so a policy change after the hold cannot silently
+   * drop or add a quorum.
+   */
+  quorumRequired?: number;
+  /**
+   * Approver identities recorded so far for a quorum hold (distinct
+   * strings — the same approver approving twice counts once). Persisted
+   * with the decision, so a restart cannot lose the count.
+   */
+  approvals?: string[];
 }
 
 /** Minimal rolling-window ledger. Async so a Postgres implementation can serve it. */

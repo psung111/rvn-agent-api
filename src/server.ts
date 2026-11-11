@@ -24,6 +24,7 @@ import {
   rateLimitsPerKindFromPolicy,
   TokenBucket,
   validateAnomalyFields,
+  validateQuorumFields,
   validateRateLimitFields,
   validateRateLimitKindFields,
   type AnomalySignal,
@@ -299,7 +300,57 @@ async function main() {
       });
       return { status: 200, body: { intent, denied: true, approver } };
     }
-    await store.audit.append('APPROVAL', intent.id, intent.agentId, { approver });
+    // Multi-approver quorum (v0.27.0): when the stored decision requires N
+    // distinct approvers, each approval is recorded on the decision itself
+    // (persisted, so a restart cannot lose the count) and the intent only
+    // executes once N is reached. The same approver approving twice counts
+    // once — the count is the size of the distinct-approver set, so a
+    // Telegram approver tapping Approve twice (same `telegram:<name>`
+    // identity) cannot meet a quorum alone. A deny above still ends the
+    // hold outright, and the stored quorum requirement governs even if the
+    // policy has changed since the hold was raised.
+    const quorumRequired = decision.quorumRequired;
+    if (quorumRequired !== undefined && quorumRequired > 1) {
+      const recorded = [...(decision.approvals ?? [])];
+      if (recorded.includes(approver)) {
+        return {
+          status: 202,
+          body: {
+            intent,
+            decision,
+            approver,
+            alreadyCounted: true,
+            approvalsReceived: recorded.length,
+            approvalsRequired: quorumRequired,
+            message: `approval from ${approver} already recorded (${recorded.length}/${quorumRequired})`,
+          },
+        };
+      }
+      recorded.push(approver);
+      const updated: Decision = { ...decision, approvals: recorded };
+      await store.intents.putDecision(id, updated);
+      await store.audit.append('APPROVAL', intent.id, intent.agentId, {
+        approver,
+        approvalsReceived: recorded.length,
+        approvalsRequired: quorumRequired,
+      });
+      if (recorded.length < quorumRequired) {
+        return {
+          status: 202,
+          body: {
+            intent,
+            decision: updated,
+            approver,
+            approvalsReceived: recorded.length,
+            approvalsRequired: quorumRequired,
+            message: `approval ${recorded.length}/${quorumRequired} recorded — waiting for ${quorumRequired - recorded.length} more approver(s)`,
+          },
+        };
+      }
+      // Quorum met: fall through to re-evaluate + execute below.
+    } else {
+      await store.audit.append('APPROVAL', intent.id, intent.agentId, { approver });
+    }
 
     // Re-evaluate at approval time: caps may have moved since the hold.
     // History includes this intent itself; the detector excludes it by id.
@@ -327,7 +378,20 @@ async function main() {
       // Mark the decision resolved so a second approve returns 409 instead of re-executing.
       await store.intents.putDecision(id, { ...fresh, kind: 'ALLOW', reasonCodes: ['APPROVED', ...fresh.reasonCodes] });
       await deliverWebhook('intent.executed', intent, { txid });
-      return { status: 200, body: { intent, txid, mock: MOCK, approver } };
+      return {
+        status: 200,
+        body: {
+          intent,
+          txid,
+          mock: MOCK,
+          approver,
+          // A quorum hold completes with the full count, so the final
+          // approver can see the quorum was met, not just that it executed.
+          ...(quorumRequired !== undefined && quorumRequired > 1
+            ? { approvalsReceived: quorumRequired, approvalsRequired: quorumRequired }
+            : {}),
+        },
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await store.audit.append('EXECUTION_FAILED', intent.id, intent.agentId, { error: message });
@@ -807,9 +871,14 @@ async function main() {
     const summary =
       status === 200 && parsed.action === 'approve'
         ? `Approved — txid ${(body as { txid?: string }).txid}`
-        : status === 200
-          ? 'Denied — the intent will not execute'
-          : `Not resolved: ${(body as { error?: string }).error ?? `status ${status}`}`;
+        : status === 202
+          ? // Quorum hold: this tap counted, but more approvers are needed —
+            // the hold message stays up (only a 200 edits it) and the toast
+            // reports the count.
+            `Approval ${(body as { approvalsReceived?: number }).approvalsReceived}/${(body as { approvalsRequired?: number }).approvalsRequired} recorded — waiting for more approvers`
+          : status === 200
+            ? 'Denied — the intent will not execute'
+            : `Not resolved: ${(body as { error?: string }).error ?? `status ${status}`}`;
     await answer(summary);
 
     if (status === 200 && telegramApi && intent && cq.message) {
@@ -1103,6 +1172,10 @@ async function main() {
     const anomalyError = validateAnomalyFields(b);
     if (anomalyError) {
       return reply.code(400).send({ error: anomalyError });
+    }
+    const quorumError = validateQuorumFields(b);
+    if (quorumError) {
+      return reply.code(400).send({ error: quorumError });
     }
     await store.policies.set(b as RvnPolicy);
     await store.audit.append('DECISION', 'policy-update', agentId, { kind: 'POLICY_REPLACED' });

@@ -56,8 +56,8 @@ verifies clean.
 | GET | `/v1/assets?pattern=` | list assets |
 | GET | `/v1/assets/:name` | asset details |
 | POST | `/v1/intents/simulate` | dry-run an issue/reissue/transfer through policy — no side effects |
-| POST | `/v1/intents/:id/approve` | approve a held intent |
-| POST | `/v1/intents/:id/deny` | deny a held intent |
+| POST | `/v1/intents/:id/approve` | approve a held intent (body: optional `approver` label; a quorum hold returns 202 with `approvalsReceived`/`approvalsRequired` until N distinct approvers have approved, then executes) |
+| POST | `/v1/intents/:id/deny` | deny a held intent (any single approver ends the hold) |
 | GET | `/v1/intents/pending` | intents awaiting approval |
 | GET | `/v1/audit` | hash-chained audit trail (`chainValid`) |
 | POST | `/v1/audit/archive` | archive entries older than `beforeMs` (epoch ms; omitted = retention policy, `RVN_AUDIT_RETENTION_DAYS`, default 90 days) to a JSON file with a chain-verification proof, then prune them from the live chain (newest entry always kept as the anchor) |
