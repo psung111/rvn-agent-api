@@ -25,6 +25,8 @@
  *   21. get_metrics via MCP (decision counts reflect the session's submits, read-only)
  *   22. quorum approvals via MCP (first approval 202 with 1/2, repeat counts
  *       once, second distinct approver executes)
+ *   23. quorum roster via MCP (hold carries the roster, a non-roster
+ *       approval is a 403 with 0/2 of 3, roster members execute 2/2 of 3)
  *
  * Usage: pnpm mcp-smoke   (API must be running, default http://localhost:3001)
  */
@@ -420,6 +422,40 @@ async function main(): Promise<void> {
   check('second distinct approver executes via MCP (200, txid, 2/2)',
     qSecond.ok && qSecond.body.httpStatus === 200 && !!qSecond.body.txid &&
     qSecond.body.approvalsReceived === 2 && qSecond.body.approvalsRequired === 2, qSecond.body);
+
+  // 23. quorum roster via MCP (v0.28.0) — the hold carries the roster; a
+  // non-roster approval is a 403 with 0/2 of 3 and the count does not
+  // move; roster members count once each and the second executes 2/2 of 3.
+  const rAgent = 'mcp-smoke-roster';
+  const rCoin = `SMOKEMCPR${Date.now() % 1_000_000}`;
+  const rPolicy = await toolCall('get_policy', { agentId: rAgent });
+  const rSet = await toolCall('set_policy', {
+    agentId: rAgent,
+    policy: {
+      ...rPolicy.body, agentId: rAgent, allowedDestinations: [walletA],
+      quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000',
+      quorumApprovers: ['alice', 'bob', 'carol'],
+    },
+  });
+  check('set_policy with a roster via MCP 200s',
+    rSet.ok && rSet.body.httpStatus === 200, rSet.body);
+  const rHold = await toolCall('issue_asset', { agentId: rAgent, name: rCoin, qty: '60000', toAddress: walletA });
+  check('issue above the roster quorum threshold holds via MCP with the roster on the decision',
+    rHold.ok && rHold.body.decision?.kind === 'REQUIRE_APPROVAL' && rHold.body.decision?.quorumRequired === 2 &&
+    JSON.stringify(rHold.body.decision?.quorumApprovers) === JSON.stringify(['alice', 'bob', 'carol']), rHold.body);
+  const rOut = await toolCall('approve_intent', { intentId: rHold.body.intent?.id, approver: 'mallory' });
+  check('non-roster approval via MCP is a 403 with 0/2 of 3',
+    !rOut.ok && rOut.body.httpStatus === 403 && rOut.body.approvalsReceived === 0 &&
+    rOut.body.approvalsRequired === 2 && rOut.body.approversTotal === 3, rOut.body);
+  const rFirst = await toolCall('approve_intent', { intentId: rHold.body.intent?.id, approver: 'alice' });
+  check('roster approval via MCP is 202 with 1/2 of 3',
+    rFirst.ok && rFirst.body.httpStatus === 202 && rFirst.body.approvalsReceived === 1 &&
+    rFirst.body.approvalsRequired === 2 && rFirst.body.approversTotal === 3, rFirst.body);
+  const rSecond = await toolCall('approve_intent', { intentId: rHold.body.intent?.id, approver: 'bob' });
+  check('second roster approver executes via MCP (200, txid, 2/2 of 3)',
+    rSecond.ok && rSecond.body.httpStatus === 200 && !!rSecond.body.txid &&
+    rSecond.body.approvalsReceived === 2 && rSecond.body.approvalsRequired === 2 &&
+    rSecond.body.approversTotal === 3, rSecond.body);
 
   child.kill();
   shuttingDown = true;

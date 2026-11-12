@@ -1,6 +1,6 @@
 import type { RvnPolicy } from './types.js';
 import { validateAnomalyFields } from './anomaly.js';
-import { validateQuorumFields } from './quorum.js';
+import { normalizeRoster, validateQuorumFields } from './quorum.js';
 import {
   validateRateLimitFields,
   validateRateLimitKindFields,
@@ -181,9 +181,17 @@ export function applyPreset(
       } catch {
         throw new Error(`override '${key}' must be a non-negative integer decimal string`);
       }
+    } else if (key === 'quorumApprovers') {
+      // Shape-check only here (non-empty array of non-empty identity
+      // strings): the merged-policy validateQuorumFields below is the
+      // backstop for the all-or-nothing rule and count <= roster size,
+      // which can only be judged once all overrides are merged.
+      if (!Array.isArray(value) || normalizeRoster(value) === undefined) {
+        throw new Error(`override 'quorumApprovers' must be a non-empty array of approver identity strings`);
+      }
     } else {
       throw new Error(
-        `unknown override field: '${key}' (overridable: ${[...OVERRIDABLE_QTY_FIELDS, ...OVERRIDABLE_LIST_FIELDS, 'assetNamePattern', 'decisionTtlSeconds', 'rateLimitMaxOps', 'rateLimitWindowSeconds', 'rateLimitKindLimits', 'anomalyQtyMultiple', 'anomalyMinHistory', 'anomalyBurstWindowSeconds', 'anomalyBurstMinCount', 'quorumApprovals', 'quorumAboveIssueQtyBaseUnits', 'quorumAboveTransferQtyBaseUnits'].join(', ')})`,
+        `unknown override field: '${key}' (overridable: ${[...OVERRIDABLE_QTY_FIELDS, ...OVERRIDABLE_LIST_FIELDS, 'assetNamePattern', 'decisionTtlSeconds', 'rateLimitMaxOps', 'rateLimitWindowSeconds', 'rateLimitKindLimits', 'anomalyQtyMultiple', 'anomalyMinHistory', 'anomalyBurstWindowSeconds', 'anomalyBurstMinCount', 'quorumApprovals', 'quorumAboveIssueQtyBaseUnits', 'quorumAboveTransferQtyBaseUnits', 'quorumApprovers'].join(', ')})`,
       );
     }
     merged[key] = value;

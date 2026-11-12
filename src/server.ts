@@ -300,17 +300,36 @@ async function main() {
       });
       return { status: 200, body: { intent, denied: true, approver } };
     }
-    // Multi-approver quorum (v0.27.0): when the stored decision requires N
-    // distinct approvers, each approval is recorded on the decision itself
-    // (persisted, so a restart cannot lose the count) and the intent only
-    // executes once N is reached. The same approver approving twice counts
-    // once — the count is the size of the distinct-approver set, so a
-    // Telegram approver tapping Approve twice (same `telegram:<name>`
-    // identity) cannot meet a quorum alone. A deny above still ends the
-    // hold outright, and the stored quorum requirement governs even if the
-    // policy has changed since the hold was raised.
+    // Multi-approver quorum (v0.27.0; roster in v0.28.0): when the stored
+    // decision requires N distinct approvers, each approval is recorded on
+    // the decision itself (persisted, so a restart cannot lose the count)
+    // and the intent only executes once N is reached. The same approver
+    // approving twice counts once — the count is the size of the
+    // distinct-approver set, so a Telegram approver tapping Approve twice
+    // (same `telegram:<name>` identity) cannot meet a quorum alone. When
+    // the decision carries a roster (M), only its members count: anyone
+    // else is rejected with 403 and the count does not move. A deny above
+    // still ends the hold outright, and the stored quorum requirement and
+    // roster govern even if the policy has changed since the hold was
+    // raised.
     const quorumRequired = decision.quorumRequired;
     if (quorumRequired !== undefined && quorumRequired > 1) {
+      const roster = decision.quorumApprovers;
+      const approversTotal = roster?.length;
+      if (roster !== undefined && !roster.includes(approver)) {
+        return {
+          status: 403,
+          body: {
+            intent,
+            decision,
+            approver,
+            error: `approver ${approver} is not on the quorum roster`,
+            approvalsReceived: (decision.approvals ?? []).length,
+            approvalsRequired: quorumRequired,
+            ...(approversTotal !== undefined ? { approversTotal } : {}),
+          },
+        };
+      }
       const recorded = [...(decision.approvals ?? [])];
       if (recorded.includes(approver)) {
         return {
@@ -322,7 +341,8 @@ async function main() {
             alreadyCounted: true,
             approvalsReceived: recorded.length,
             approvalsRequired: quorumRequired,
-            message: `approval from ${approver} already recorded (${recorded.length}/${quorumRequired})`,
+            ...(approversTotal !== undefined ? { approversTotal } : {}),
+            message: `approval from ${approver} already recorded (${recorded.length}/${quorumRequired}${approversTotal !== undefined ? ` of ${approversTotal}` : ''})`,
           },
         };
       }
@@ -343,7 +363,8 @@ async function main() {
             approver,
             approvalsReceived: recorded.length,
             approvalsRequired: quorumRequired,
-            message: `approval ${recorded.length}/${quorumRequired} recorded — waiting for ${quorumRequired - recorded.length} more approver(s)`,
+            ...(approversTotal !== undefined ? { approversTotal } : {}),
+            message: `approval ${recorded.length}/${quorumRequired}${approversTotal !== undefined ? ` of ${approversTotal}` : ''} recorded — waiting for ${quorumRequired - recorded.length} more approver(s)`,
           },
         };
       }
@@ -386,9 +407,16 @@ async function main() {
           mock: MOCK,
           approver,
           // A quorum hold completes with the full count, so the final
-          // approver can see the quorum was met, not just that it executed.
+          // approver can see the quorum was met, not just that it executed;
+          // approversTotal reports the roster size (M) when one was set.
           ...(quorumRequired !== undefined && quorumRequired > 1
-            ? { approvalsReceived: quorumRequired, approvalsRequired: quorumRequired }
+            ? {
+                approvalsReceived: quorumRequired,
+                approvalsRequired: quorumRequired,
+                ...(decision.quorumApprovers !== undefined
+                  ? { approversTotal: decision.quorumApprovers.length }
+                  : {}),
+              }
             : {}),
         },
       };

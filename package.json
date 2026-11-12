@@ -39,5 +39,5 @@
     "test:quorum": "tsx demo/quorum-test.ts",
     "test:langchain": "python3 tests/test_adapter.py"
   },
-  "version": "0.27.0"
+  "version": "0.28.0"
 }

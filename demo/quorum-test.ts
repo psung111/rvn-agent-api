@@ -1,5 +1,6 @@
 /**
- * quorum-test: checks for multi-approver quorum (v0.27.0, slice 1).
+ * quorum-test: checks for multi-approver quorum (v0.27.0, slice 1; roster
+ * in v0.28.0, slice 2).
  *
  *  pnpm test:quorum
  *
@@ -7,7 +8,10 @@
  *   - config parse/validate split: lenient quorumConfigFromPolicy
  *     (missing/malformed sides degrade to no quorum, never a crash) and
  *     strict validateQuorumFields (count < 2, half-configured quorum,
- *     malformed thresholds all rejected)
+ *     malformed thresholds all rejected) — plus the roster split:
+ *     normalizeRoster (trim/dedup/drop-empties) and strict roster
+ *     validation (roster-only, count > roster size, empty/non-string
+ *     entries all rejected)
  *   - PUT validation: bad quorum fields 400 and leave the stored policy
  *     untouched; preset overrides validate the same way
  *   - below the quorum threshold a single approver still executes
@@ -26,6 +30,12 @@
  *     even though it would otherwise ALLOW
  *   - simulate reports the quorum decision with zero side effects
  *     (no audit entries, no pending intent)
+ *   - roster (slice 2): a hold above the threshold snapshots the roster
+ *     (M) onto the decision and reports n/N of M in pending; an
+ *     approver outside the roster gets 403 and the count does not move;
+ *     roster members count once each and the Nth executes with the full
+ *     count; a deny by a non-roster approver still ends the hold; a
+ *     policy change after the hold cannot change who may approve it
  *   - the audit chain stays valid
  *
  * Nothing touches the network: the API is localhost-only.
@@ -33,6 +43,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import {
+  normalizeRoster,
   quorumConfigFromPolicy,
   validateQuorumFields,
 } from '../src/policy/quorum.js';
@@ -157,6 +168,43 @@ async function main(): Promise<void> {
       typeof validateQuorumFields(bad) === 'string', validateQuorumFields(bad));
   }
 
+  // ---- 0b. roster parse/validate unit checks (v0.28.0) ----
+  check('normalizeRoster trims, dedups, and drops empties/non-strings',
+    JSON.stringify(normalizeRoster([' alice ', 'bob', 'alice', '', '  ', 7, 'carol'])) === JSON.stringify(['alice', 'bob', 'carol']),
+    normalizeRoster([' alice ', 'bob', 'alice', '', '  ', 7, 'carol']));
+  check('normalizeRoster of a non-array is undefined', normalizeRoster('alice') === undefined);
+  check('normalizeRoster of an all-empty array is undefined', normalizeRoster(['', '  ']) === undefined);
+  check('roster resolves on a valid quorum config',
+    JSON.stringify(quorumConfigFromPolicy({
+      quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: ['alice', 'bob', 'carol'],
+    })?.approvers) === JSON.stringify(['alice', 'bob', 'carol']));
+  check('roster normalizes on resolve (dupes and whitespace dropped)',
+    JSON.stringify(quorumConfigFromPolicy({
+      quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: [' bob ', 'alice', 'bob'],
+    })?.approvers) === JSON.stringify(['bob', 'alice']));
+  check('no roster key means no roster on the config',
+    quorumConfigFromPolicy({ quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000' })?.approvers === undefined);
+  check('strict validation accepts a full valid set with a roster',
+    validateQuorumFields({
+      quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: ['alice', 'bob', 'carol'],
+    }) === undefined);
+  check('strict validation accepts a roster exactly the quorum size',
+    validateQuorumFields({
+      quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: ['alice', 'bob'],
+    }) === undefined);
+  for (const bad of [
+    { quorumApprovers: ['alice', 'bob'] },
+    { quorumApprovals: 2, quorumApprovers: ['alice', 'bob'] },
+    { quorumApprovals: 3, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: ['alice', 'bob'] },
+    { quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: 'alice' as unknown as string[] },
+    { quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: [] },
+    { quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: ['alice', ''] },
+    { quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: ['alice', 7 as unknown as string] },
+  ]) {
+    check(`strict validation rejects roster config ${JSON.stringify(bad)}`,
+      typeof validateQuorumFields(bad) === 'string', validateQuorumFields(bad));
+  }
+
   const api = await bootApi();
   try {
     const health = await get('/v1/health');
@@ -179,10 +227,17 @@ async function main(): Promise<void> {
       { ...good, quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: undefined },
       { ...good, quorumApprovals: undefined, quorumAboveIssueQtyBaseUnits: '50000' },
       { ...good, quorumAboveIssueQtyBaseUnits: 'ten' },
+      // Roster cases (v0.28.0): count above roster size, roster with no
+      // count, roster with no threshold, empty roster, non-string entry.
+      { ...good, quorumApprovals: 3, quorumApprovers: ['alice', 'bob'] },
+      { ...good, quorumApprovals: undefined, quorumAboveIssueQtyBaseUnits: undefined, quorumApprovers: ['alice', 'bob'] },
+      { ...good, quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: undefined, quorumApprovers: ['alice', 'bob'] },
+      { ...good, quorumApprovers: [] },
+      { ...good, quorumApprovers: ['alice', 7] },
     ];
     for (const bad of badPolicies) {
       const r = await put(`/v1/policies/${agent}`, bad);
-      check(`PUT rejects bad quorum config ${JSON.stringify({ quorumApprovals: bad.quorumApprovals, quorumAboveIssueQtyBaseUnits: bad.quorumAboveIssueQtyBaseUnits })}`,
+      check(`PUT rejects bad quorum config ${JSON.stringify({ quorumApprovals: bad.quorumApprovals, quorumAboveIssueQtyBaseUnits: bad.quorumAboveIssueQtyBaseUnits, quorumApprovers: bad.quorumApprovers })}`,
         r.status === 400, r.json);
     }
     const stored = await get(`/v1/policies/${agent}`);
@@ -206,6 +261,23 @@ async function main(): Promise<void> {
     });
     check('preset override with a valid quorum config applies',
       presetGood.status === 200 && presetGood.json?.policy?.quorumApprovals === 2, presetGood.json);
+    const presetRosterBad = await post(`/v1/policies/preset-agent/preset`, {
+      preset: 'balanced',
+      overrides: { quorumApprovals: 3, quorumAboveIssueQtyBaseUnits: '50000', quorumApprovers: ['alice', 'bob'] },
+    });
+    check('preset override with a count above the roster size is rejected',
+      presetRosterBad.status === 400, presetRosterBad.json);
+    const presetRosterGood = await post(`/v1/policies/preset-agent/preset`, {
+      preset: 'balanced',
+      overrides: {
+        quorumApprovals: 2, quorumAboveIssueQtyBaseUnits: '50000',
+        quorumApprovers: ['alice', 'bob', 'carol'], allowedDestinations: [wallet],
+      },
+    });
+    check('preset override with a valid roster applies',
+      presetRosterGood.status === 200 &&
+      JSON.stringify(presetRosterGood.json?.policy?.quorumApprovers) === JSON.stringify(['alice', 'bob', 'carol']),
+      presetRosterGood.json);
 
     // ---- 3. below the quorum threshold: single approver still executes ----
     const small = await post('/v1/assets/issue', {
@@ -308,6 +380,85 @@ async function main(): Promise<void> {
       { seqBefore, seqAfter: auditAfter.json?.entries?.[0]?.seq });
     const simApprove = await post(`/v1/intents/${sim.json.decision.intentId}/approve`, { approver: 'alice' });
     check('approving a simulated quorum decision 404s', simApprove.status === 404, simApprove.json);
+
+    // ---- 8. roster (v0.28.0): only roster members count toward quorum ----
+    const rAgent = 'quorum-roster';
+    const roster = ['alice', 'bob', 'carol'];
+    const rPut = await put(`/v1/policies/${rAgent}`, basePolicy(rAgent, {
+      quorumApprovals: 2,
+      quorumAboveIssueQtyBaseUnits: '50000',
+      quorumApprovers: roster,
+      allowedDestinations: [wallet],
+    }));
+    check('roster policy stores', rPut.status === 200, rPut.json);
+    const rHold = await post('/v1/assets/issue', {
+      agentId: rAgent, name: 'ROSTERCOIN', qty: '60000', toAddress: wallet,
+    });
+    check('roster hold raised (202)',
+      rHold.status === 202 && rHold.json?.decision?.kind === 'REQUIRE_APPROVAL', rHold.json);
+    check('hold decision snapshots the roster (M=3) with quorumRequired 2',
+      rHold.json?.decision?.quorumRequired === 2 &&
+      JSON.stringify(rHold.json?.decision?.quorumApprovers) === JSON.stringify(roster), rHold.json?.decision);
+    const rPending = await get('/v1/intents/pending');
+    check('pending hold reports n/N of M (0 approvals, quorumRequired 2, roster of 3)',
+      rPending.json?.pending?.some((p: any) =>
+        p.intent.id === rHold.json.intent.id &&
+        p.decision.quorumRequired === 2 &&
+        (p.decision.approvals ?? []).length === 0 &&
+        p.decision.quorumApprovers?.length === 3) === true, rPending.json?.pending?.length);
+    const outsider = await post(`/v1/intents/${rHold.json.intent.id}/approve`, { approver: 'mallory' });
+    check('an approver outside the roster gets 403 with 0/2 of 3',
+      outsider.status === 403 && outsider.json?.approvalsReceived === 0 &&
+      outsider.json?.approvalsRequired === 2 && outsider.json?.approversTotal === 3, outsider.json);
+    const rPending2 = await get('/v1/intents/pending');
+    check('rejected outsider approval leaves the hold pending with no approvals recorded',
+      rPending2.json?.pending?.some((p: any) =>
+        p.intent.id === rHold.json.intent.id && (p.decision.approvals ?? []).length === 0) === true);
+    const rFirst = await post(`/v1/intents/${rHold.json.intent.id}/approve`, { approver: 'alice' });
+    check('first roster approval is 202 with 1/2 of 3',
+      rFirst.status === 202 && rFirst.json?.approvalsReceived === 1 &&
+      rFirst.json?.approvalsRequired === 2 && rFirst.json?.approversTotal === 3 &&
+      rFirst.json?.txid === undefined, rFirst.json);
+    const rDup = await post(`/v1/intents/${rHold.json.intent.id}/approve`, { approver: 'alice' });
+    check('same roster approver twice still counts 1 (alreadyCounted, 1/2 of 3)',
+      rDup.status === 202 && rDup.json?.approvalsReceived === 1 && rDup.json?.alreadyCounted === true &&
+      rDup.json?.approversTotal === 3, rDup.json);
+    // The stored decision is the authority: swap the policy roster after
+    // the hold, and the hold's original roster still governs.
+    const rPut2 = await put(`/v1/policies/${rAgent}`, basePolicy(rAgent, {
+      quorumApprovals: 2,
+      quorumAboveIssueQtyBaseUnits: '50000',
+      quorumApprovers: ['dave', 'erin', 'frank'],
+      allowedDestinations: [wallet],
+    }));
+    check('policy roster swapped after the hold', rPut2.status === 200, rPut2.json);
+    const rStale = await post(`/v1/intents/${rHold.json.intent.id}/approve`, { approver: 'dave' });
+    check('an approver on the NEW roster but not the hold roster still gets 403',
+      rStale.status === 403 && rStale.json?.approvalsReceived === 1, rStale.json);
+    const rSecond = await post(`/v1/intents/${rHold.json.intent.id}/approve`, { approver: 'carol' });
+    check('second roster approver executes (200, txid, 2/2 of 3)',
+      rSecond.status === 200 && !!rSecond.json?.txid &&
+      rSecond.json?.approvalsReceived === 2 && rSecond.json?.approvalsRequired === 2 &&
+      rSecond.json?.approversTotal === 3, rSecond.json);
+    // A deny by a non-roster approver still ends a quorum hold outright:
+    // the roster gates approvals toward quorum, not the single-approver
+    // deny.
+    const rDoomed = await post('/v1/assets/issue', {
+      agentId: rAgent, name: 'ROSTERDOOM', qty: '60000', toAddress: wallet,
+    });
+    check('second roster hold raised', rDoomed.status === 202 && rDoomed.json?.decision?.quorumRequired === 2, rDoomed.json);
+    const rDenied = await post(`/v1/intents/${rDoomed.json.intent.id}/deny`, { approver: 'mallory' });
+    check('a deny by a non-roster approver still ends the hold',
+      rDenied.status === 200 && rDenied.json?.denied === true, rDenied.json);
+    // Simulate reports the roster with zero side effects.
+    const simRoster = await post('/v1/intents/simulate', {
+      op: 'issue', agentId: rAgent, assetName: 'SIMROSTER', qty: '60000', destination: wallet,
+    });
+    check('simulate reports the roster hold (quorumRequired 2, roster of 3)',
+      simRoster.json?.simulated === true && simRoster.json?.decision?.kind === 'REQUIRE_APPROVAL' &&
+      simRoster.json?.decision?.quorumRequired === 2 &&
+      JSON.stringify(simRoster.json?.decision?.quorumApprovers) === JSON.stringify(['dave', 'erin', 'frank']),
+      simRoster.json);
 
     // ---- Audit chain still valid ----
     const audit = await get('/v1/audit?limit=200');

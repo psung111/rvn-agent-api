@@ -163,9 +163,10 @@ def build_tools(client: RvnApiClient) -> list:
         re-evaluation denies it) and returns its txid. Only call this after
         a human has approved the hold — it moves real funds/supply. For a
         quorum hold, one approval returns the progress
-        (approvalsReceived/approvalsRequired) instead of a txid until N
-        distinct approvers have approved; the same approver twice counts
-        once."""
+        (approvalsReceived/approvalsRequired, plus approversTotal when a
+        roster is set) instead of a txid until N distinct approvers have
+        approved; the same approver twice counts once, and an approver who
+        is not on the hold's roster is rejected."""
         try:
             return _dump(client.approve_intent(intent_id, approver))
         except RvnApiError as err:

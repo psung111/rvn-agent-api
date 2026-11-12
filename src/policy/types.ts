@@ -98,11 +98,11 @@ export interface RvnPolicy {
    * Optional multi-approver quorum (v0.27.0): a second, higher approval
    * threshold. Intents whose qty sits above the quorum threshold need
    * `quorumApprovals` distinct approvers instead of one; below it a
-   * single approver still suffices. All three fields follow the
-   * all-or-nothing rule: a count with no threshold (or vice versa) is
-   * rejected on PUT / preset overrides, and a stored policy missing
-   * either side degrades to no quorum, so older policies keep working
-   * unchanged.
+   * single approver still suffices. All four fields follow the
+   * all-or-nothing rule: a count with no threshold (or a threshold or
+   * roster with no count) is rejected on PUT / preset overrides, and a
+   * stored policy missing either side degrades to no quorum, so older
+   * policies keep working unchanged.
    */
   /** Distinct approvers required for a quorum hold (must be >= 2). */
   quorumApprovals?: number;
@@ -110,6 +110,16 @@ export interface RvnPolicy {
   quorumAboveIssueQtyBaseUnits?: string;
   /** Transfer qty above this needs quorum. */
   quorumAboveTransferQtyBaseUnits?: string;
+  /**
+   * Optional approver roster (M) for quorum holds (v0.28.0): the set of
+   * approver identities allowed to count toward quorum. When set, only
+   * these identities count — anyone else is rejected at approval time —
+   * and a pending hold reports n/N of M. Absent means any N distinct
+   * approvers count (v0.27.0 behavior). Must be at least as large as
+   * quorumApprovals when both are set; validated on PUT / preset
+   * overrides.
+   */
+  quorumApprovers?: string[];
 }
 
 export interface Decision {
@@ -134,6 +144,14 @@ export interface Decision {
    * with the decision, so a restart cannot lose the count.
    */
   approvals?: string[];
+  /**
+   * Approver roster (M) snapshotted onto the decision at hold time
+   * (v0.28.0): only these identities count toward this hold's quorum.
+   * Absent means any distinct approvers count. The stored decision is
+   * the authority at approval time, so a policy change after the hold
+   * can neither add nor remove approvers from that hold.
+   */
+  quorumApprovers?: string[];
 }
 
 /** Minimal rolling-window ledger. Async so a Postgres implementation can serve it. */

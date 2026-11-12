@@ -569,6 +569,86 @@ and logs the result in CHANGELOG.md.
     suites still green. Remainder: an approver roster (M) — a
     policy-defined set of approver identities, so only roster members
     count toward quorum and a pending hold can report n/N of M.
+  - [x] 2026-11-12 — v0.28.0 approver roster (slice 2, item complete):
+    new optional policy field `quorumApprovers` — the M-strong roster
+    of approver identities for quorum holds. `normalizeRoster()` in
+    `src/policy/quorum.ts` parses it leniently (trim, drop empty /
+    non-string entries, dedup; a non-array or all-empty value means
+    no roster, never a crash); `validateQuorumFields()` enforces it
+    strictly on PUT and preset overrides (roster with no count or no
+    threshold is half-configured, empty / non-string entries are
+    rejected, and a count above the roster size is rejected — a quorum
+    that can never be met is a config error). `evaluateIntent`
+    snapshots the roster onto the decision with the count
+    (`Decision.quorumApprovers`), so the stored decision is the
+    authority at approval time: a policy change after the hold can
+    neither add nor remove approvers from that hold. `resolveApproval`
+    rejects a non-roster approver with 403 (count unchanged, nothing
+    recorded) and reports `approversTotal: M` on every quorum response
+    (202 partial, 202 already-counted, 403, and the final 200), so a
+    pending hold reports n/N of M through its decision (pending list
+    included — no route change needed). A deny by any single approver
+    still ends a hold outright, roster or not — the roster gates
+    approvals toward quorum, not the deny. `simulate` reports the
+    roster with zero side effects. No new route or tool: the MCP
+    `approve_intent` / `set_policy` / `pending_intents` and LangChain
+    `approve_intent` descriptions now name the roster, and
+    `applyPreset` accepts `quorumApprovers` as an override. Verified
+    by extending `pnpm test:quorum` (now 93 checks: roster
+    normalization and strict-validation units, PUT 400s that leave
+    the stored policy untouched, preset override gating, a full
+    roster integration — hold snapshots M=3, pending reports 0/2 of
+    3, outsider 403 with no count, roster member 1/2 of 3, repeat
+    still 1, a swapped policy roster cannot approve the old hold,
+    second member executes 2/2 of 3, non-roster deny still ends a
+    hold, simulate reports the roster) and a new MCP smoke section
+    (5 checks); demo, mcp-smoke, approvals, telegram-callback,
+    simulate, reissue, subasset, unique, presets, anomaly, store,
+    archive, migrations, partition, webhooks, ratelimit, metrics,
+    langchain suites still green. The multi-approver quorum item is
+    complete; the next top item is the first of the five newly
+    appended backlog items below.
+
+- [ ] **API-key authentication** — the REST surface is currently
+  unauthenticated and relies on the localhost-only bind. Add per-agent
+  API keys: keys issued per agentId, stored hashed, presented as
+  `Authorization: Bearer <key>`; a wrong or missing key gets 401 and
+  the attempt is audited; the MCP server and LangChain client pass the
+  key through. Localhost demo/tests keep working via an env-seeded
+  operator key or an explicit unauthenticated-dev flag, so the demo
+  loop never breaks. Keys rotate (issue/revoke/list) through a small
+  admin surface, and revocation takes effect immediately.
+- [ ] **OpenAPI spec + generated docs** — the API has grown to ~20
+  routes with no machine-readable contract. Add a hand-maintained
+  `openapi.yaml` (or generate it from the route table) covering every
+  route, decision shape, reason code, and error status, served at
+  `/v1/openapi.json`; a test asserts every registered route appears in
+  the spec and every spec path exists on the server, so the two can
+  never drift. README links it as the contract agents should code
+  against.
+- [ ] **Hold-aging alerts** — a hold that sits unapproved is silent
+  today. Add a configurable age threshold after which the server
+  re-notifies the approvers (Telegram + a `intent.hold_aging` webhook
+  event) once per hold, with the hold's age and n/N quorum progress in
+  the payload; the alert is audited, and approving/denying clears it.
+  No polling endpoint changes: the check runs on a small interval
+  inside the server (or on each submit/approve), so a restart cannot
+  lose the alert state.
+- [ ] **Policy history + rollback** — a PUT or preset apply replaces a
+  policy wholesale and the old one is gone except for a
+  POLICY_REPLACED audit line. Keep the last N policy versions per
+  agent in the store (memory + Postgres), add
+  `GET /v1/policies/:agentId/history` and
+  `POST /v1/policies/:agentId/rollback` (restore a named version,
+  audited as POLICY_REPLACED with the source version), so a bad
+  policy change is one call to undo instead of a re-typed PUT.
+- [ ] **Balance-aware simulate** — `simulate` answers the policy
+  question but not the funding question: on the real node it should
+  also report whether the source wallet can fund the operation
+  (asset balance for a transfer, RVN for fees where applicable),
+  while the mock node answers from its in-memory ledger. A simulation
+  that would ALLOW on policy but fail on funds reports a distinct
+  reason code, so agents stop submitting doomed intents.
 
 ## Done
 

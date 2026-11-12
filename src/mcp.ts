@@ -186,7 +186,9 @@ const TOOLS: ToolDef[] = [
       'or an expired decision returns an error. Returns the execution txid on success. ' +
       'For a quorum hold (decision quorumRequired N), one approval returns 202 with ' +
       'approvalsReceived/approvalsRequired until N distinct approvers have approved — ' +
-      'the same approver twice counts once — and only the Nth executes.',
+      'the same approver twice counts once — and only the Nth executes. ' +
+      'When the hold carries a roster (decision quorumApprovers, M identities), ' +
+      'only roster members count: anyone else gets a 403 and the count does not move.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -214,7 +216,9 @@ const TOOLS: ToolDef[] = [
   {
     name: 'pending_intents',
     description:
-      'List intents currently held for approval (non-expired REQUIRE_APPROVAL decisions).',
+      'List intents currently held for approval (non-expired REQUIRE_APPROVAL decisions). ' +
+      'A quorum hold reports its progress on the decision: quorumRequired (N), approvals ' +
+      'recorded so far, and quorumApprovers (the M-strong roster, when one is set).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -239,7 +243,7 @@ const TOOLS: ToolDef[] = [
         agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
         policy: {
           type: 'object',
-          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited), rateLimitKindLimits (per-kind { maxOps, windowSeconds } buckets, e.g. { issue_asset: { maxOps: 2, windowSeconds: 3600 } }), anomalyQtyMultiple / anomalyMinHistory / anomalyBurstWindowSeconds / anomalyBurstMinCount (positive integers tuning the anomaly gate; unset keeps the defaults 10 / 3 / 3600 / 3), and quorumApprovals (integer >= 2) with quorumAboveIssueQtyBaseUnits / quorumAboveTransferQtyBaseUnits (non-negative integer decimal strings; a count with no threshold, or vice versa, is rejected).',
+          description: 'Full policy document: version (1), maxIssueQtyBaseUnits, approvalAboveIssueQtyBaseUnits, dailyIssueBudgetBaseUnits, maxTransferQtyBaseUnits, approvalAboveTransferQtyBaseUnits, allowedDestinations, blockedDestinations, assetNamePattern, decisionTtlSeconds, plus optional rateLimitMaxOps/rateLimitWindowSeconds (set together, or neither for unlimited), rateLimitKindLimits (per-kind { maxOps, windowSeconds } buckets, e.g. { issue_asset: { maxOps: 2, windowSeconds: 3600 } }), anomalyQtyMultiple / anomalyMinHistory / anomalyBurstWindowSeconds / anomalyBurstMinCount (positive integers tuning the anomaly gate; unset keeps the defaults 10 / 3 / 3600 / 3), and quorumApprovals (integer >= 2) with quorumAboveIssueQtyBaseUnits / quorumAboveTransferQtyBaseUnits (non-negative integer decimal strings; a count with no threshold, or vice versa, is rejected) plus optional quorumApprovers (the M-strong roster of approver identities; only roster members count toward quorum, and the count must not exceed the roster size).',
         },
       },
       required: ['policy'],
@@ -599,7 +603,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.27.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.28.0' },
       });
     }
     case 'notifications/initialized':

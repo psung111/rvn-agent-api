@@ -1,5 +1,71 @@
 # Changelog
 
+## 2026-11-12 — v0.28.0 (Approver roster for multi-approver quorum, slice 2 — item complete)
+
+- Approver roster (M) for multi-approver quorum, completing the item:
+  a policy-defined set of approver identities, so only roster members
+  count toward quorum and a pending hold reports n/N of M. New optional
+  policy field `quorumApprovers` (string array). `normalizeRoster()` in
+  `src/policy/quorum.ts` parses it leniently for stored policies
+  (trim, drop empty/non-string entries, dedup; a non-array or
+  all-empty value means no roster, never a crash), and
+  `validateQuorumFields()` enforces it strictly on PUT and preset
+  overrides — a roster with no count or no threshold is half-configured,
+  empty/non-string entries are rejected, and a required count above the
+  roster size is rejected (a quorum that can never be met is a config
+  error, not a policy). A quorum without a roster keeps the v0.27.0
+  behavior: any N distinct approvers count.
+- `evaluateIntent` snapshots the roster onto the decision
+  (`Decision.quorumApprovers`) with the count, so the stored decision is
+  the authority at approval time: a policy change after the hold can
+  neither add nor remove approvers from that hold. `resolveApproval`
+  rejects a non-roster approver with 403 (the count does not move,
+  nothing is recorded) and reports `approversTotal: M` on every quorum
+  response — the 202 partial approval, the 202 already-counted reply,
+  the 403, and the final 200 — so a pending hold reports n/N of M
+  through its decision, pending list included, with no route change.
+  A deny by any single approver still ends a hold outright, roster or
+  not: the roster gates approvals toward quorum, not the deny. The
+  Telegram webhook shares the same path, so a tap from a non-roster
+  `telegram:<name>` identity gets the not-on-the-roster toast and the
+  hold message stays up. `simulate` reports the roster with zero side
+  effects, like every other gate.
+- Adapters keep the "cover every route" invariant with no new tool:
+  the MCP `approve_intent` / `set_policy` / `pending_intents` and
+  LangChain `approve_intent` descriptions now name the roster, and
+  `applyPreset` accepts `quorumApprovers` as an override.
+  `initialize` now reports server version 0.28.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`); README approve row
+  gained the roster note.
+- New `pnpm test:quorum` coverage (now 93 checks): roster
+  normalization and strict-validation units (trim/dedup/drop-empties,
+  non-array and all-empty degrade to no roster, count above roster
+  size / roster-only / empty / non-string entries all rejected); PUT
+  400s for the roster cases that leave the stored policy untouched;
+  preset overrides (count above roster rejected, valid roster
+  applies); and a full roster integration — a hold snapshots M=3
+  with quorumRequired 2, pending reports 0/2 of 3, an outsider gets
+  403 with the count unmoved, a roster member approves 1/2 of 3, a
+  repeat still counts 1, a policy roster swapped after the hold
+  cannot approve it (the stored roster governs), the second roster
+  member executes 2/2 of 3, a non-roster deny still ends a hold, and
+  simulate reports the roster. `demo/mcp-smoke.ts` gained a roster
+  section (5 checks). `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`,
+  `pnpm test:simulate`, `pnpm test:reissue`,
+  `pnpm test:subasset`, `pnpm test:unique`, `pnpm test:presets`,
+  `pnpm test:anomaly`, `pnpm test:store`, `pnpm test:archive`,
+  `pnpm test:migrations`, `pnpm test:partition`,
+  `pnpm test:webhooks`, `pnpm test:ratelimit`,
+  `pnpm test:metrics`, `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content.
+- The multi-approver quorum item is complete; the next top item is
+  API-key authentication (first of five newly appended backlog items).
+
 ## 2026-11-11 — v0.27.0 (Multi-approver quorum, slice 1 — item partial)
 
 - Multi-approver quorum for high-value holds, slice 1: policy fields

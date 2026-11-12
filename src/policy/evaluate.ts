@@ -71,6 +71,7 @@ function decide(
   policy: RvnPolicy,
   nowMs: number,
   quorumRequired?: number,
+  quorumApprovers?: string[],
 ): Decision {
   return {
     intentId: intent.id,
@@ -80,6 +81,11 @@ function decide(
     decidedAtMs: nowMs,
     expiresAtMs: nowMs + policy.decisionTtlSeconds * 1000,
     ...(quorumRequired !== undefined ? { quorumRequired } : {}),
+    // The roster rides the quorum count: it is only meaningful on a
+    // quorum hold, and the stored decision is the authority at approval
+    // time, so a policy change after the hold cannot change who may
+    // approve it.
+    ...(quorumRequired !== undefined && quorumApprovers !== undefined ? { quorumApprovers } : {}),
   };
 }
 
@@ -155,12 +161,16 @@ export async function evaluateIntent(
   const needsQuorum =
     quorum !== undefined && quorumThreshold !== undefined && qty > quorumThreshold;
   const quorumRequired = needsQuorum ? quorum!.approvals : undefined;
+  // The roster (M) is snapshotted onto the decision with the count, so
+  // the approval path enforces the roster that was in force when the
+  // hold was raised, not whatever the policy says now.
+  const quorumApprovers = needsQuorum ? quorum!.approvers : undefined;
 
   const destinationKnown =
     policy.allowedDestinations.includes('*') ||
     policy.allowedDestinations.some((d) => norm(d) === dest);
   if (!destinationKnown) {
-    return decide(intent, 'REQUIRE_APPROVAL', ['DESTINATION_NOT_ALLOWLISTED'], policy, nowMs, quorumRequired);
+    return decide(intent, 'REQUIRE_APPROVAL', ['DESTINATION_NOT_ALLOWLISTED'], policy, nowMs, quorumRequired, quorumApprovers);
   }
 
   const approvalThreshold =
@@ -168,7 +178,7 @@ export async function evaluateIntent(
       ? BigInt(policy.approvalAboveIssueQtyBaseUnits)
       : BigInt(policy.approvalAboveTransferQtyBaseUnits);
   if (qty > approvalThreshold) {
-    return decide(intent, 'REQUIRE_APPROVAL', ['ABOVE_APPROVAL_THRESHOLD'], policy, nowMs, quorumRequired);
+    return decide(intent, 'REQUIRE_APPROVAL', ['ABOVE_APPROVAL_THRESHOLD'], policy, nowMs, quorumRequired, quorumApprovers);
   }
 
   // ---- Stage 2b: anomaly gate — only flips would-be-ALLOW intents ----
@@ -177,13 +187,13 @@ export async function evaluateIntent(
   // anomaly signal exists to catch the case the other gates miss, an
   // intent that looks policy-clean but statistically strange.
   if (detectAnomalies(intent, history, nowMs, anomalyConfigFromPolicy(policy)).length > 0) {
-    return decide(intent, 'REQUIRE_APPROVAL', ['ANOMALY_SUSPECTED'], policy, nowMs, quorumRequired);
+    return decide(intent, 'REQUIRE_APPROVAL', ['ANOMALY_SUSPECTED'], policy, nowMs, quorumRequired, quorumApprovers);
   }
 
   // ---- Stage 2c: quorum gate — a would-be-ALLOW intent above the quorum
   // threshold is held for N distinct approvers, never allowed outright.
   if (needsQuorum) {
-    return decide(intent, 'REQUIRE_APPROVAL', ['QUORUM_REQUIRED'], policy, nowMs, quorumRequired);
+    return decide(intent, 'REQUIRE_APPROVAL', ['QUORUM_REQUIRED'], policy, nowMs, quorumRequired, quorumApprovers);
   }
 
   // ---- Stage 3: allow ----
