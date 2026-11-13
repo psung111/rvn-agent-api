@@ -37,7 +37,8 @@
     "test:ratelimit": "tsx demo/ratelimit-test.ts",
     "test:metrics": "tsx demo/metrics-test.ts",
     "test:quorum": "tsx demo/quorum-test.ts",
+    "test:auth": "tsx demo/auth-test.ts",
     "test:langchain": "python3 tests/test_adapter.py"
   },
-  "version": "0.28.0"
+  "version": "0.29.0"
 }

@@ -1,8 +1,9 @@
 import { AuditLog } from '../audit.js';
+import type { ApiKeyRecord } from '../auth/keys.js';
 import { defaultPolicy, InMemoryIssueLedger } from '../policy/index.js';
 import type { AuditEntry, AuditKind } from '../audit.js';
 import type { Decision, RvnIntent, RvnPolicy } from '../policy/index.js';
-import type { AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
+import type { ApiKeyStore, AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
 
 class MemoryPolicyStore implements PolicyStore {
   private policies = new Map<string, RvnPolicy>([['*', defaultPolicy()]]);
@@ -88,6 +89,37 @@ class MemoryRateLimitStore implements RateLimitStore {
   }
 }
 
+class MemoryApiKeyStore implements ApiKeyStore {
+  private keys = new Map<string, ApiKeyRecord>();
+  async issue(record: ApiKeyRecord): Promise<void> {
+    this.keys.set(record.id, { ...record });
+  }
+  async getByHash(keyHash: string): Promise<ApiKeyRecord | undefined> {
+    for (const record of this.keys.values()) {
+      if (record.keyHash === keyHash) return { ...record };
+    }
+    return undefined;
+  }
+  async getById(id: string): Promise<ApiKeyRecord | undefined> {
+    const record = this.keys.get(id);
+    return record ? { ...record } : undefined;
+  }
+  async list(agentId?: string): Promise<ApiKeyRecord[]> {
+    return [...this.keys.values()]
+      .filter((r) => agentId === undefined || r.agentId === agentId)
+      .sort((a, b) => a.createdAtMs - b.createdAtMs)
+      .map((r) => ({ ...r }));
+  }
+  async revoke(id: string, revokedAtMs: number): Promise<boolean> {
+    const record = this.keys.get(id);
+    if (!record) return false;
+    if (record.revokedAtMs === undefined) {
+      this.keys.set(id, { ...record, revokedAtMs });
+    }
+    return true;
+  }
+}
+
 /** Ephemeral backend: everything lives in process memory. */
 export class MemoryStore implements Store {
   readonly kind = 'memory' as const;
@@ -98,6 +130,7 @@ export class MemoryStore implements Store {
   readonly ledger = new InMemoryIssueLedger();
   readonly audit = new MemoryAuditStore();
   readonly ratelimits = new MemoryRateLimitStore();
+  readonly apikeys = new MemoryApiKeyStore();
   async close(): Promise<void> {
     // Nothing to release.
   }

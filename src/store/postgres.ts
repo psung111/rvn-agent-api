@@ -1,10 +1,11 @@
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { makeChainedEntry, verifyChain, type AuditEntry, type AuditKind } from '../audit.js';
+import type { ApiKeyRecord } from '../auth/keys.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
 import { applyMigrations, loadMigrations, type Migration } from './migrations.js';
 import { auditPartitionDdl, auditPartitionFor } from './partitions.js';
-import type { AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
+import type { ApiKeyStore, AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
 
 function rowToEntry(r: {
   seq: string | number; prev_hash: string; hash: string; at_ms: string | number;
@@ -212,6 +213,57 @@ class PostgresRateLimitStore implements RateLimitStore {
   }
 }
 
+function rowToApiKey(r: {
+  id: string; agent_id: string; key_hash: string; key_prefix: string;
+  created_at_ms: string | number; revoked_at_ms: string | number | null;
+}): ApiKeyRecord {
+  return {
+    id: r.id,
+    agentId: r.agent_id,
+    keyHash: r.key_hash,
+    keyPrefix: r.key_prefix,
+    createdAtMs: Number(r.created_at_ms),
+    ...(r.revoked_at_ms === null ? {} : { revokedAtMs: Number(r.revoked_at_ms) }),
+  };
+}
+
+class PostgresApiKeyStore implements ApiKeyStore {
+  constructor(private pool: Pool) {}
+  async issue(record: ApiKeyRecord): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO api_keys (id, agent_id, key_hash, key_prefix, created_at_ms, revoked_at_ms)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [record.id, record.agentId, record.keyHash, record.keyPrefix, record.createdAtMs, record.revokedAtMs ?? null],
+    );
+  }
+  async getByHash(keyHash: string): Promise<ApiKeyRecord | undefined> {
+    const { rows } = await this.pool.query('SELECT * FROM api_keys WHERE key_hash = $1', [keyHash]);
+    return rows[0] ? rowToApiKey(rows[0]) : undefined;
+  }
+  async getById(id: string): Promise<ApiKeyRecord | undefined> {
+    const { rows } = await this.pool.query('SELECT * FROM api_keys WHERE id = $1', [id]);
+    return rows[0] ? rowToApiKey(rows[0]) : undefined;
+  }
+  async list(agentId?: string): Promise<ApiKeyRecord[]> {
+    const { rows } = agentId === undefined
+      ? await this.pool.query('SELECT * FROM api_keys ORDER BY created_at_ms ASC')
+      : await this.pool.query('SELECT * FROM api_keys WHERE agent_id = $1 ORDER BY created_at_ms ASC', [agentId]);
+    return rows.map(rowToApiKey);
+  }
+  async revoke(id: string, revokedAtMs: number): Promise<boolean> {
+    // Only set the timestamp when it is still NULL, so a second revoke
+    // keeps the original revocation time instead of moving it.
+    const { rowCount } = await this.pool.query(
+      'UPDATE api_keys SET revoked_at_ms = $2 WHERE id = $1 AND revoked_at_ms IS NULL',
+      [id, revokedAtMs],
+    );
+    if (rowCount !== null && rowCount > 0) return true;
+    // Either unknown, or already revoked — distinguish by existence.
+    const { rows } = await this.pool.query('SELECT id FROM api_keys WHERE id = $1', [id]);
+    return rows.length > 0;
+  }
+}
+
 class PostgresLedger implements IssueLedger {
   constructor(private pool: Pool) {}
   async recordIssue(agentId: string, qtyBaseUnits: bigint, atMs: number): Promise<void> {
@@ -240,6 +292,7 @@ export class PostgresStore implements Store {
   readonly ledger: IssueLedger;
   readonly audit: AuditStore;
   readonly ratelimits: RateLimitStore;
+  readonly apikeys: ApiKeyStore;
 
   private constructor(private pool: Pool, appliedMigrations: readonly string[]) {
     this.appliedMigrations = appliedMigrations;
@@ -248,6 +301,7 @@ export class PostgresStore implements Store {
     this.ledger = new PostgresLedger(pool);
     this.audit = new PostgresAuditStore(pool);
     this.ratelimits = new PostgresRateLimitStore(pool);
+    this.apikeys = new PostgresApiKeyStore(pool);
   }
 
   /**

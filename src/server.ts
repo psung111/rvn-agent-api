@@ -11,6 +11,17 @@ import {
   type AuditArchive,
 } from './audit/archive.js';
 import {
+  authConfigFromEnv,
+  generateApiKey,
+  hashApiKey,
+  OPERATOR_AGENT_ID,
+  parseBearerHeader,
+  publicApiKey,
+  verifyApiKey,
+  verifyOperatorKey,
+  type AuthConfig,
+} from './auth/keys.js';
+import {
   anomalyConfigFromPolicy,
   applyPreset,
   createsSupply,
@@ -56,6 +67,10 @@ const webhookDispatcher = webhookDispatcherFromEnv();
 const retention = retentionConfigFromEnv();
 const telegramConfig = telegramConfigFromEnv();
 const telegramApi = telegramConfig ? new TelegramApi(telegramConfig.botToken) : null;
+// API-key auth (v0.29.0): off by default (the localhost demo posture);
+// on when RVN_AUTH_ENABLED=true or an operator key is set. The operator
+// key is the only credential that may use the /v1/admin/* key surface.
+const auth: AuthConfig = authConfigFromEnv();
 // Optional shared secret proving the update came from Telegram. Set it with
 // BotFather's /setwebhook secret_token parameter; when unset any caller may
 // hit the webhook (fine for local dev, not for a public host).
@@ -109,6 +124,116 @@ async function main() {
   app.log.info(
     `audit retention: ${retention.retentionDays} days, archives to ${retention.archiveDir}`,
   );
+  app.log.info(
+    auth.enabled
+      ? `api-key auth: enabled (operator key ${auth.operatorKeyHash ? 'configured' : 'not set — admin surface unreachable until RVN_OPERATOR_API_KEY is set'})`
+      : 'api-key auth: disabled — every /v1 route is unauthenticated (set RVN_AUTH_ENABLED=true or RVN_OPERATOR_API_KEY to turn it on)',
+  );
+
+  /**
+   * Who is calling, resolved by the onRequest hook below. The operator
+   * key (env-seeded) may act as any agent and use the admin surface; a
+   * per-agent key may only act as its own agent. When auth is off the
+   * identity is the operator, so the demo loop and all existing tests
+   * keep working unchanged.
+   */
+  interface AuthIdentity {
+    agentId: string;
+    operator: boolean;
+  }
+  const authOf = (req: any): AuthIdentity => req.auth as AuthIdentity;
+
+  /**
+   * The agent id a submit acts as: the body's agentId when given, else
+   * the key's agent (auth on) or 'agent-1' (auth off). A non-operator key
+   * acting as another agent is a 403, audited as AUTH_FAILED — a key is
+   * issued per agentId, and acting as another agent is not its job.
+   */
+  const resolveAgentId = async (
+    req: any,
+    bodyAgentId: unknown,
+  ): Promise<{ agentId: string } | { status: 403; error: string }> => {
+    const identity = authOf(req);
+    if (typeof bodyAgentId === 'string' && bodyAgentId) {
+      if (!identity.operator && bodyAgentId !== identity.agentId) {
+        const error = `API key is issued for agent '${identity.agentId}' and cannot act as '${bodyAgentId}'`;
+        await store.audit
+          .append('AUTH_FAILED', 'auth', identity.agentId, { reason: 'agent_mismatch', requestedAgentId: bodyAgentId })
+          .catch((err) => app.log.warn({ err }, 'auth failure audit failed'));
+        return { status: 403, error };
+      }
+      return { agentId: bodyAgentId };
+    }
+    return { agentId: auth.enabled ? identity.agentId : 'agent-1' };
+  };
+
+  /**
+   * The same binding for routes whose agent id is a path param
+   * (policies, ratelimit, anomaly): a non-operator key may only read or
+   * write its own agent. Returns an error message when forbidden.
+   */
+  const checkAgentParam = async (req: any, agentId: string): Promise<string | undefined> => {
+    const identity = authOf(req);
+    if (!identity.operator && agentId !== identity.agentId) {
+      const error = `API key is issued for agent '${identity.agentId}' and cannot act as '${agentId}'`;
+      await store.audit
+        .append('AUTH_FAILED', 'auth', identity.agentId, { reason: 'agent_mismatch', requestedAgentId: agentId })
+        .catch((err) => app.log.warn({ err }, 'auth failure audit failed'));
+      return error;
+    }
+    return undefined;
+  };
+
+  /**
+   * The auth gate (v0.29.0). Every /v1 route except /v1/health (liveness)
+   * and /v1/telegram/webhook (which has its own Telegram secret check)
+   * requires a Bearer key when auth is on: the env-seeded operator key,
+   * or a key issued through the admin surface and stored hashed. A wrong
+   * or missing key gets 401 and the attempt is audited as AUTH_FAILED
+   * (the key prefix only — never the key itself). The admin surface
+   * additionally requires the operator key (403 otherwise). When auth is
+   * off the hook is a no-op and the identity is the operator, so the
+   * localhost demo loop is untouched.
+   */
+  app.addHook('onRequest', async (req, reply) => {
+    const path = req.url.split('?')[0];
+    if (path === '/v1/health' || path === '/v1/telegram/webhook') {
+      (req as any).auth = { agentId: OPERATOR_AGENT_ID, operator: true } as AuthIdentity;
+      return;
+    }
+    if (!auth.enabled) {
+      (req as any).auth = { agentId: OPERATOR_AGENT_ID, operator: true } as AuthIdentity;
+      return;
+    }
+    const presented = parseBearerHeader(req.headers.authorization);
+    let identity: AuthIdentity | undefined;
+    if (presented !== undefined) {
+      if (verifyOperatorKey(auth, presented)) {
+        identity = { agentId: OPERATOR_AGENT_ID, operator: true };
+      } else {
+        const record = await store.apikeys.getByHash(hashApiKey(presented));
+        if (record && verifyApiKey(record, presented)) {
+          identity = { agentId: record.agentId, operator: false };
+        }
+      }
+    }
+    if (!identity) {
+      // The prefix (first 8 chars) identifies the key in the audit log
+      // without ever recording the key itself; 'none' when no key was sent.
+      const keyPrefix = presented ? presented.replace(/^rvn_/, '').slice(0, 8) : 'none';
+      await store.audit
+        .append('AUTH_FAILED', 'auth', 'unknown', { keyPrefix, path })
+        .catch((err) => app.log.warn({ err }, 'auth failure audit failed'));
+      return reply.code(401).send({ error: 'missing or invalid API key' });
+    }
+    (req as any).auth = identity;
+    if (path.startsWith('/v1/admin/') && !identity.operator) {
+      await store.audit
+        .append('AUTH_FAILED', 'auth', identity.agentId, { reason: 'admin_requires_operator_key', path })
+        .catch((err) => app.log.warn({ err }, 'auth failure audit failed'));
+      return reply.code(403).send({ error: 'admin routes require the operator key' });
+    }
+  });
 
   const policyFor = async (agentId: string): Promise<RvnPolicy> =>
     (await store.policies.get(agentId)) ?? (await store.policies.get('*')) ?? defaultPolicy();
@@ -517,30 +642,45 @@ async function main() {
     return reply.code(403).send({ intent, decision });
   };
 
-  app.get('/v1/health', async () => ({
-    ok: true,
-    mock: MOCK,
-    store: store.kind,
-    migrations: store.appliedMigrations,
-    audit: {
-      retentionDays: retention.retentionDays,
-      archiveDir: retention.archiveDir,
-      // Monthly partitioning of audit_entries (migration 0003, v0.25.0);
-      // the memory store is never partitioned.
-      partitioned: store.appliedMigrations.includes('0003'),
-    },
-    approvals: {
-      telegramConfigured: approvalNotifier.name === 'telegram',
-      telegramWebhookSecretConfigured: WEBHOOK_SECRET !== undefined,
-      perAgentChatRoutes: telegramConfig ? Object.keys(telegramConfig.chatIdsByAgent).length : 0,
-    },
-    webhooks: {
-      configured: webhookDispatcher.enabled,
-      endpoints: webhookDispatcher.endpointCount,
-      retry: webhookDispatcher.retryOptions,
-    },
-    ...(await node.getInfo()),
-  }));
+  app.get('/v1/health', async () => {
+    // Key count is best-effort: a store read failure must not take the
+    // liveness check down with it.
+    let liveKeys: number | undefined;
+    try {
+      liveKeys = (await store.apikeys.list()).filter((k) => k.revokedAtMs === undefined).length;
+    } catch {
+      liveKeys = undefined;
+    }
+    return {
+      ok: true,
+      mock: MOCK,
+      store: store.kind,
+      migrations: store.appliedMigrations,
+      auth: {
+        enabled: auth.enabled,
+        operatorKeyConfigured: auth.operatorKeyHash !== undefined,
+        keys: liveKeys,
+      },
+      audit: {
+        retentionDays: retention.retentionDays,
+        archiveDir: retention.archiveDir,
+        // Monthly partitioning of audit_entries (migration 0003, v0.25.0);
+        // the memory store is never partitioned.
+        partitioned: store.appliedMigrations.includes('0003'),
+      },
+      approvals: {
+        telegramConfigured: approvalNotifier.name === 'telegram',
+        telegramWebhookSecretConfigured: WEBHOOK_SECRET !== undefined,
+        perAgentChatRoutes: telegramConfig ? Object.keys(telegramConfig.chatIdsByAgent).length : 0,
+      },
+      webhooks: {
+        configured: webhookDispatcher.enabled,
+        endpoints: webhookDispatcher.endpointCount,
+        retry: webhookDispatcher.retryOptions,
+      },
+      ...(await node.getInfo()),
+    };
+  });
 
   /**
    * Ops metrics (read-only, v0.26.0): decision counts by kind and reason
@@ -574,9 +714,11 @@ async function main() {
     if (!b.name || !b.qty || !b.toAddress) {
       return reply.code(400).send({ error: 'name, qty and toAddress are required' });
     }
+    const resolved = await resolveAgentId(req, b.agentId);
+    if ('status' in resolved) return reply.code(resolved.status).send({ error: resolved.error });
     const intent: RvnIntent = {
       id: randomUUID(),
-      agentId: String(b.agentId ?? 'agent-1'),
+      agentId: resolved.agentId,
       kind: 'issue_asset',
       assetName: String(b.name).toUpperCase(),
       qtyBaseUnits: String(b.qty),
@@ -627,9 +769,11 @@ async function main() {
         error: 'newUnits is required when newIpfsHash is set (ravend params are positional)',
       });
     }
+    const resolved = await resolveAgentId(req, b.agentId);
+    if ('status' in resolved) return reply.code(resolved.status).send({ error: resolved.error });
     const intent: RvnIntent = {
       id: randomUUID(),
-      agentId: typeof b.agentId === 'string' && b.agentId ? b.agentId : 'agent-1',
+      agentId: resolved.agentId,
       kind: 'reissue_asset',
       assetName: name.toUpperCase(),
       qtyBaseUnits: qty,
@@ -664,9 +808,11 @@ async function main() {
         error: "sub-asset name must contain '/' (PARENT/SUB); use /v1/assets/issue for a root asset",
       });
     }
+    const resolved = await resolveAgentId(req, b.agentId);
+    if ('status' in resolved) return reply.code(resolved.status).send({ error: resolved.error });
     const intent: RvnIntent = {
       id: randomUUID(),
-      agentId: typeof b.agentId === 'string' && b.agentId ? b.agentId : 'agent-1',
+      agentId: resolved.agentId,
       kind: 'issue_subasset',
       assetName: name.toUpperCase(),
       qtyBaseUnits: qty,
@@ -710,9 +856,11 @@ async function main() {
         error: 'unique assets are singletons — qty must be 1 when given (and defaults to 1)',
       });
     }
+    const resolved = await resolveAgentId(req, b.agentId);
+    if ('status' in resolved) return reply.code(resolved.status).send({ error: resolved.error });
     const intent: RvnIntent = {
       id: randomUUID(),
-      agentId: typeof b.agentId === 'string' && b.agentId ? b.agentId : 'agent-1',
+      agentId: resolved.agentId,
       kind: 'issue_unique',
       assetName: name.toUpperCase(),
       qtyBaseUnits: '1',
@@ -730,9 +878,11 @@ async function main() {
     if (!b.assetName || !b.qty || !b.destination) {
       return reply.code(400).send({ error: 'assetName, qty and destination are required' });
     }
+    const resolved = await resolveAgentId(req, b.agentId);
+    if ('status' in resolved) return reply.code(resolved.status).send({ error: resolved.error });
     const intent: RvnIntent = {
       id: randomUUID(),
-      agentId: String(b.agentId ?? 'agent-1'),
+      agentId: resolved.agentId,
       kind: 'transfer_asset',
       assetName: String(b.assetName).toUpperCase(),
       qtyBaseUnits: String(b.qty),
@@ -805,9 +955,11 @@ async function main() {
     } catch {
       return reply.code(400).send({ error: 'qty must be an integer decimal string in base units' });
     }
+    const resolved = await resolveAgentId(req, b.agentId);
+    if ('status' in resolved) return reply.code(resolved.status).send({ error: resolved.error });
     const intent: RvnIntent = {
       id: `sim-${randomUUID()}`,
-      agentId: String(b.agentId ?? 'agent-1'),
+      agentId: resolved.agentId,
       kind:
         op === 'issue' ? 'issue_asset'
         : op === 'reissue' ? 'reissue_asset'
@@ -944,8 +1096,10 @@ async function main() {
    * `kinds`, keyed by intent kind, for every kind the policy limits —
    * including when there is no agent-wide bucket at all.
    */
-  app.get('/v1/ratelimit/:agentId', async (req) => {
+  app.get('/v1/ratelimit/:agentId', async (req, reply) => {
     const { agentId } = req.params as { agentId: string };
+    const forbidden = await checkAgentParam(req, agentId);
+    if (forbidden) return reply.code(403).send({ error: forbidden });
     const policy = await policyFor(agentId);
     const config = rateLimitFromPolicy(policy);
     const kindLimits = rateLimitsPerKindFromPolicy(policy);
@@ -978,8 +1132,10 @@ async function main() {
    * `windowHours` (query, default 24, clamped to 1..168) bounds the
    * window; history is capped at the store's 200 most recent intents.
    */
-  app.get('/v1/anomaly/:agentId', async (req) => {
+  app.get('/v1/anomaly/:agentId', async (req, reply) => {
     const { agentId } = req.params as { agentId: string };
+    const forbidden = await checkAgentParam(req, agentId);
+    if (forbidden) return reply.code(403).send({ error: forbidden });
     const q = req.query as { windowHours?: string };
     const parsedWindow = Number(q.windowHours);
     const windowHours =
@@ -1130,8 +1286,10 @@ async function main() {
   // so GET /v1/policies/presets never resolves 'presets' as an agent id.
   app.get('/v1/policies/presets', async () => ({ presets: POLICY_PRESETS }));
 
-  app.get('/v1/policies/:agentId', async (req) => {
+  app.get('/v1/policies/:agentId', async (req, reply) => {
     const { agentId } = req.params as { agentId: string };
+    const forbidden = await checkAgentParam(req, agentId);
+    if (forbidden) return reply.code(403).send({ error: forbidden });
     return policyFor(agentId);
   });
 
@@ -1144,6 +1302,8 @@ async function main() {
    */
   app.post('/v1/policies/:agentId/preset', async (req, reply) => {
     const { agentId } = req.params as { agentId: string };
+    const forbidden = await checkAgentParam(req, agentId);
+    if (forbidden) return reply.code(403).send({ error: forbidden });
     const b = (req.body ?? {}) as Record<string, unknown>;
     const presetId = b.preset;
     if (typeof presetId !== 'string' || !presetId) {
@@ -1170,6 +1330,8 @@ async function main() {
 
   app.put('/v1/policies/:agentId', async (req, reply) => {
     const { agentId } = req.params as { agentId: string };
+    const forbidden = await checkAgentParam(req, agentId);
+    if (forbidden) return reply.code(403).send({ error: forbidden });
     const b = req.body as Partial<RvnPolicy>;
     const required = [
       'maxIssueQtyBaseUnits', 'approvalAboveIssueQtyBaseUnits', 'dailyIssueBudgetBaseUnits',
@@ -1208,6 +1370,51 @@ async function main() {
     await store.policies.set(b as RvnPolicy);
     await store.audit.append('DECISION', 'policy-update', agentId, { kind: 'POLICY_REPLACED' });
     return { policy: b };
+  });
+
+  /**
+   * API-key admin surface (v0.29.0). The onRequest hook already requires
+   * the operator key for every /v1/admin/* route, so these handlers only
+   * do the key work. The raw key is returned exactly once, at issue
+   * time — it is never stored and can never be listed again. Listings
+   * carry the public view (id, agent, prefix, timestamps, revocation)
+   * and never a hash. Revocation takes effect immediately: the next
+   * request with that key gets 401. Every issue and revoke is audited.
+   */
+  app.post('/v1/admin/api-keys', async (req, reply) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const agentId = b.agentId;
+    if (typeof agentId !== 'string' || !agentId.trim()) {
+      return reply.code(400).send({ error: 'agentId is required' });
+    }
+    const { key, record } = generateApiKey(agentId.trim());
+    await store.apikeys.issue(record);
+    await store.audit.append('API_KEY_ISSUED', record.id, agentId.trim(), {
+      keyId: record.id,
+      keyPrefix: record.keyPrefix,
+    });
+    return { key, record: publicApiKey(record) };
+  });
+
+  app.get('/v1/admin/api-keys', async (req) => {
+    const q = req.query as { agentId?: string };
+    const records = await store.apikeys.list(
+      typeof q.agentId === 'string' && q.agentId ? q.agentId : undefined,
+    );
+    return { keys: records.map(publicApiKey) };
+  });
+
+  app.post('/v1/admin/api-keys/:id/revoke', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const record = await store.apikeys.getById(id);
+    if (!record) return reply.code(404).send({ error: 'unknown API key' });
+    const revokedAtMs = record.revokedAtMs ?? Date.now();
+    await store.apikeys.revoke(id, revokedAtMs);
+    await store.audit.append('API_KEY_REVOKED', id, record.agentId, {
+      keyId: id,
+      keyPrefix: record.keyPrefix,
+    });
+    return { record: publicApiKey({ ...record, revokedAtMs }) };
   });
 
   await app.listen({ port: PORT, host: '127.0.0.1' });

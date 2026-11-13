@@ -68,11 +68,36 @@ verifies clean.
 | GET | `/v1/ratelimit/:agentId` | rate-limit stats for an agent (read-only) |
 | GET | `/v1/anomaly/:agentId?windowHours=` | anomaly stats for an agent: holds raised by signal, holds still pending, thresholds in force (read-only) |
 | GET | `/v1/metrics` | ops metrics: decision counts by kind and reason code, rate-limit 429s by agent and kind, webhook deliveries by endpoint, approval hold age, store backend (read-only) |
+| POST | `/v1/admin/api-keys` | issue an API key for an agent (operator key only; the raw key is returned once) |
+| GET | `/v1/admin/api-keys` | list issued keys (operator key only; prefixes and timestamps, never hashes) |
+| POST | `/v1/admin/api-keys/:id/revoke` | revoke a key immediately (operator key only) |
 
 Policy defaults (`src/policy/presets.ts`): per-issue cap 100k units, approval above
 10k, 24h issue budget 500k, transfers to unknown destinations require approval,
 asset names must match Ravencoin's `^[A-Z0-9._]{3,30}$`. Tune to taste — that's the
 whole product.
+
+## API-key authentication
+
+The REST surface is unauthenticated by default (the localhost demo posture).
+Turn auth on with `RVN_AUTH_ENABLED=true`, or by setting an operator key:
+
+```bash
+RVN_OPERATOR_API_KEY=rvn_your-long-operator-key-here pnpm dev
+```
+
+With auth on, every `/v1` route except `/v1/health` (liveness) and
+`/v1/telegram/webhook` (its own secret check) requires
+`Authorization: Bearer <key>`. Keys are issued per agentId through the
+admin surface above — only the operator key may use it — and stored as
+SHA-256 hashes, so the raw key is shown once at issue time and never
+again. A wrong or missing key gets 401 and the attempt is audited as
+`AUTH_FAILED` (key prefix only, never the key). A non-operator key may
+only act as its own agent: submitting or reading policy as another agent
+gets 403, and omitting `agentId` defaults to the key's agent. Revoking a
+key takes effect immediately. `/v1/health` reports the auth mode and the
+live-key count. (MCP/LangChain key passthrough is the next slice; until
+then those adapters need auth off.)
 
 ## MCP server
 

@@ -618,6 +618,47 @@ and logs the result in CHANGELOG.md.
   operator key or an explicit unauthenticated-dev flag, so the demo
   loop never breaks. Keys rotate (issue/revoke/list) through a small
   admin surface, and revocation takes effect immediately.
+  - [x] 2026-11-13 — v0.29.0 API-key auth (slice 1, item partial): core
+    auth — key issuance/verification, the REST gate, per-agent binding,
+    and the admin surface. New `src/auth/keys.ts` — `generateApiKey()`
+    (`rvn_` + 32 random hex chars, 128 bits of entropy; only the
+    SHA-256 hash is stored, the raw key is shown once at issue),
+    `verifyApiKey()` (constant-time hash comparison; revoked records
+    never verify, malformed hashes never throw), `authConfigFromEnv()`
+    (auth on when `RVN_AUTH_ENABLED=true` or an operator key is set;
+    a <16-char operator key is ignored entirely), `verifyOperatorKey()`,
+    `parseBearerHeader()`, and `publicApiKey()` (listings never carry a
+    hash). New `apikeys` seam on the `Store` interface
+    (issue/getByHash/getById/list/revoke) with memory and Postgres
+    backends; migration `0004_api_keys` (`key_hash` unique,
+    `revoked_at_ms` instead of delete, so revocation stays auditable).
+    The server's `onRequest` hook gates every `/v1` route except
+    `/v1/health` (liveness) and `/v1/telegram/webhook` (its own secret
+    check) when auth is on: a missing/wrong key gets 401, audited as
+    `AUTH_FAILED` with the key prefix only; `/v1/admin/*` additionally
+    requires the operator key (403 otherwise). A non-operator key may
+    only act as its own agent — submits and agent-scoped reads/writes
+    (policies, ratelimit, anomaly) 403 on a mismatch, and an omitted
+    `agentId` defaults to the key's agent; the operator key may act as
+    any agent. Admin routes: `POST /v1/admin/api-keys` (issue, audited
+    `API_KEY_ISSUED`), `GET /v1/admin/api-keys` (list, public view
+    only), `POST /v1/admin/api-keys/:id/revoke` (audited
+    `API_KEY_REVOKED`, effective immediately; unknown id 404s).
+    `/v1/health` reports `auth: { enabled, operatorKeyConfigured,
+    keys }`. With auth off the identity is the operator, so the demo
+    loop and every existing suite are untouched. Verified with new
+    `pnpm test:auth` (`demo/auth-test.ts`, 55 checks: key/hash/verify/
+    Bearer/env units, auth-off passthrough, and an auth-on integration
+    — 401s, gating incl. metrics, webhook exemption, issue/list/revoke,
+    per-agent binding incl. the omitted-agentId default, immediate
+    revocation, AUTH_FAILED/API_KEY_ISSUED/API_KEY_REVOKED audit
+    entries, chain valid), new api-key checks in `pnpm test:store`
+    (both backends), and migration/partition test updates for 0004;
+    demo, mcp-smoke, approvals, telegram-callback, simulate, reissue,
+    subasset, unique, presets, anomaly, store, archive, migrations,
+    partition, webhooks, ratelimit, metrics, quorum, langchain suites
+    still green. Remainder: MCP server + LangChain client key
+    passthrough, and per-key scopes (e.g. read-only keys).
 - [ ] **OpenAPI spec + generated docs** — the API has grown to ~20
   routes with no machine-readable contract. Add a hand-maintained
   `openapi.yaml` (or generate it from the route table) covering every

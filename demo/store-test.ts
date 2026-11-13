@@ -12,11 +12,13 @@
  *
  * The suite covers: policy get/set round-trip, intent + decision put/get,
  * pending() listing and expiry, the rolling issue ledger, audit chain
- * append/verify, hash-chain tamper detection, and the rate-limit bucket
- * seam (set/get/all round-trip).
+ * append/verify, hash-chain tamper detection, the rate-limit bucket
+ * seam (set/get/all round-trip), and the API-key seam (issue/getByHash/
+ * list/revoke round-trip, hashes only).
  */
 import { Pool } from 'pg';
 import { verifyChain, type AuditEntry } from '../src/audit.js';
+import { generateApiKey, hashApiKey, verifyApiKey } from '../src/auth/keys.js';
 import { defaultPolicy, type Decision, type RvnIntent, type RvnPolicy } from '../src/policy/index.js';
 import { MemoryStore, PostgresStore, storeFromEnv, type Store } from '../src/store/index.js';
 
@@ -163,6 +165,37 @@ async function runSuite(label: string, store: Store) {
   check('ratelimit buckets all() includes the stored bucket',
     rlAll.some((b) => b.key === `${label}-rl-agent` && b.state.updatedMs === 5000), rlAll);
 
+  // API keys (v0.29.0): issue/getByHash/list/revoke round-trip. Only
+  // hashes are stored — the seam never sees a raw key.
+  const { key, record } = generateApiKey(`${label}-key-agent`);
+  await store.apikeys.issue(record);
+  const byHash = await store.apikeys.getByHash(record.keyHash);
+  check('api key getByHash round-trips the record',
+    byHash?.id === record.id && byHash?.agentId === `${label}-key-agent`, byHash);
+  check('stored record verifies against the raw key', verifyApiKey(byHash, key));
+  check('api key unknown hash is undefined',
+    (await store.apikeys.getByHash(hashApiKey('rvn_00000000000000000000000000000000'))) === undefined);
+  const { record: record2 } = generateApiKey(`${label}-key-agent`);
+  await store.apikeys.issue(record2);
+  const listed = await store.apikeys.list(`${label}-key-agent`);
+  check('api key list filters by agent, oldest first',
+    listed.length === 2 && listed[0].id === record.id && listed[1].id === record2.id, listed.map((r) => r.id));
+  check('api key list without a filter includes the agent keys',
+    (await store.apikeys.list()).some((r) => r.id === record.id));
+  const revoked = await store.apikeys.revoke(record.id, 4242);
+  const afterRevoke = await store.apikeys.getById(record.id);
+  check('api key revoke returns true and stamps the time',
+    revoked === true && afterRevoke?.revokedAtMs === 4242, afterRevoke);
+  check('revoked key still resolves by hash (the verifier refuses it)',
+    (await store.apikeys.getByHash(record.keyHash))?.revokedAtMs === 4242);
+  check('revoking twice keeps the original time',
+    (await store.apikeys.revoke(record.id, 9999)) === true &&
+      (await store.apikeys.getById(record.id))?.revokedAtMs === 4242);
+  check('revoking an unknown id returns false',
+    (await store.apikeys.revoke('no-such-key', 1)) === false);
+  check('api key unknown id is undefined',
+    (await store.apikeys.getById('no-such-key')) === undefined);
+
   await store.close();
 }
 
@@ -182,7 +215,7 @@ async function main() {
       // Wipe the non-policy tables so the suite is isolated from earlier
       // runs (policies keep the seeded default the suite asserts on).
       const admin = new Pool({ connectionString: pgUrl });
-      await admin.query('TRUNCATE intents, decisions, audit_entries, ledger_spend, ratelimit_buckets');
+      await admin.query('TRUNCATE intents, decisions, audit_entries, ledger_spend, ratelimit_buckets, api_keys');
       await admin.end();
       await runSuite('postgres', pgStore);
     } catch (err) {

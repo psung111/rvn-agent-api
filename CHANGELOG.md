@@ -1,5 +1,106 @@
 # Changelog
 
+## 2026-11-13 — v0.29.0 (API-key authentication, slice 1 — item partial)
+
+- API-key authentication, slice 1: the core auth — key issuance and
+  verification, the REST gate, per-agent binding, and the admin surface.
+  New `src/auth/keys.ts`: `generateApiKey()` issues `rvn_` + 32 random
+  hex chars (128 bits of entropy) and stores only the SHA-256 hash, so
+  the raw key is shown once at issue time and can never be recovered
+  from the record; `verifyApiKey()` compares hashes in constant time
+  (a revoked record never verifies, a malformed stored hash never
+  throws); `authConfigFromEnv()` turns auth on when
+  `RVN_AUTH_ENABLED=true` or when `RVN_OPERATOR_API_KEY` is set — a
+  shorter-than-16-characters operator key is ignored entirely rather
+  than becoming a weak credential; `verifyOperatorKey()` verifies the
+  env-seeded operator key in memory; `parseBearerHeader()` extracts
+  the token from `Authorization: Bearer <key>`; `publicApiKey()`
+  strips the hash for listings.
+- New `apikeys` seam on the `Store` interface — issue / getByHash /
+  getById / list / revoke — implemented on the memory store and on
+  Postgres behind migration `0004_api_keys` (`id`, `agent_id`,
+  `key_hash` unique, `key_prefix`, `created_at_ms`, `revoked_at_ms`).
+  Revocation sets the timestamp instead of deleting the row, so a
+  revoked key stays auditable and its hash can never be re-issued as a
+  live key by accident; `getByHash` returns revoked records unchanged
+  and the verifier is what refuses them. The memory store's revoke
+  keeps the original revocation time on a second call, matching the
+  Postgres `UPDATE ... WHERE revoked_at_ms IS NULL`.
+- The server gates the REST surface in an `onRequest` hook: with auth
+  on, every `/v1` route except `/v1/health` (liveness) and
+  `/v1/telegram/webhook` (which has its own Telegram secret check)
+  requires a Bearer key — the env-seeded operator key, or an issued
+  key resolved by hash from the store. A missing or wrong key gets 401
+  and the attempt is audited as `AUTH_FAILED` (new audit kind) with
+  the key prefix only, never the key itself. The admin surface
+  additionally requires the operator key (403 otherwise, also
+  audited). A non-operator key may only act as its own agent: submits
+  (`issue` / `reissue` / `subasset` / `unique` / `transfer` /
+  `simulate`) and the agent-scoped reads and writes (policies,
+  ratelimit, anomaly) return 403 on a mismatch — audited as
+  AUTH_FAILED with reason `agent_mismatch` — and an omitted `agentId`
+  defaults to the key's agent instead of `agent-1`. The operator key
+  may act as any agent. Approve/deny and the global reads (assets,
+  pending, audit, metrics, archive) need any valid key, with no agent
+  binding in this slice.
+- Admin surface (operator key only): `POST /v1/admin/api-keys`
+  (`{ agentId }` → `{ key, record }`, audited as `API_KEY_ISSUED`,
+  new audit kind), `GET /v1/admin/api-keys` (optional `?agentId=`,
+  public view only — id, agent, prefix, timestamps, revocation — no
+  hash, no raw key), `POST /v1/admin/api-keys/:id/revoke` (audited as
+  `API_KEY_REVOKED`, new audit kind; revocation takes effect
+  immediately — the next request with that key gets 401; unknown id
+  404s; a second revoke keeps the original time). `/v1/health`
+  reports `auth: { enabled, operatorKeyConfigured, keys }` (live-key
+  count, best-effort so a store read failure never takes the liveness
+  check down). With auth off — the default — the hook is a no-op and
+  the identity is the operator, so the demo loop and every existing
+  suite run exactly as before.
+- `initialize` now reports server version 0.29.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`); README route table
+  gained the admin rows and a new API-key authentication section.
+- New `pnpm test:auth` (`demo/auth-test.ts`, 55 checks): key/hash/
+  verify/Bearer/env units (format, uniqueness, hash-only storage,
+  wrong/revoked/malformed keys, short operator key ignored, operator
+  verification, public view carries no hash); an auth-off integration
+  (health reports disabled, admin issues and submits work without a
+  key); and an auth-on integration (health stays open and reports
+  enabled with the live-key count, 401 without a key or with a wrong
+  key, metrics gated, Telegram webhook exempt, operator issues a
+  per-agent key shown once, listing carries the prefix but no hash,
+  agent key submits as its own agent and defaults to it when agentId
+  is omitted, 403 acting as another agent or on the admin surface,
+  operator acts as any agent, revoke → immediate 401, revoked key
+  stays listed with its time, unknown revoke 404s, missing agentId
+  400s, AUTH_FAILED / API_KEY_ISSUED / API_KEY_REVOKED audit entries,
+  chain valid). `pnpm test:store` gained api-key seam checks (both
+  backends; Postgres leg skipped here, no local Postgres) and its
+  TRUNCATE now includes `api_keys`; `demo/migration-test.ts` and
+  `demo/partition-test.ts` updated for migration 0004. `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:auth` script. No local
+  Postgres on this VM, so the Postgres live legs were skipped (as in
+  recent sessions); the migration is validated by the fake-pool runner
+  in `pnpm test:migrations`. One pre-existing quirk confirmed while
+  verifying: `pnpm mcp-smoke` is not idempotent against a reused
+  server — a second run 429s on the rate-limit bucket the first run
+  left behind — so it was verified once per fresh server, as the
+  documented flow does.
+- Remainder of the API-key authentication item: the MCP server and
+  LangChain client passing the key through, and per-key scopes (e.g.
+  read-only keys).
+
 ## 2026-11-12 — v0.28.0 (Approver roster for multi-approver quorum, slice 2 — item complete)
 
 - Approver roster (M) for multi-approver quorum, completing the item:

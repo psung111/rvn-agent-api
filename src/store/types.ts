@@ -1,3 +1,4 @@
+import type { ApiKeyRecord } from '../auth/keys.js';
 import type { AuditEntry, AuditKind } from '../audit.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
 
@@ -72,6 +73,24 @@ export interface RateLimitStore {
 }
 
 /**
+ * Stored API keys (v0.29.0). Only SHA-256 hashes are persisted — the raw
+ * key is shown once at issue time and never again. Revocation sets
+ * `revokedAtMs` instead of deleting the row, so a revoked key stays
+ * auditable and its hash can never be re-issued as a live key by
+ * accident. `getByHash` returns the record even when revoked; the
+ * verifier (src/auth/keys.ts) is what refuses revoked keys.
+ */
+export interface ApiKeyStore {
+  issue(record: ApiKeyRecord): Promise<void>;
+  getByHash(keyHash: string): Promise<ApiKeyRecord | undefined>;
+  getById(id: string): Promise<ApiKeyRecord | undefined>;
+  /** Every stored key, oldest first; optionally filtered to one agent. */
+  list(agentId?: string): Promise<ApiKeyRecord[]>;
+  /** Set revokedAtMs; returns false when the id is unknown. */
+  revoke(id: string, revokedAtMs: number): Promise<boolean>;
+}
+
+/**
  * All durable state behind one seam. The server only talks to this interface;
  * `kind` tells operators which backend is actually serving (also on /v1/health).
  */
@@ -88,5 +107,6 @@ export interface Store {
   readonly ledger: IssueLedger;
   readonly audit: AuditStore;
   readonly ratelimits: RateLimitStore;
+  readonly apikeys: ApiKeyStore;
   close(): Promise<void>;
 }
