@@ -14,11 +14,17 @@ Conventions mirror the API itself:
 * A DENY decision is a normal API outcome, not an error: submit routes
   return their ``{intent, decision}`` payload on HTTP 403 instead of
   raising. Anything else >= 400 raises :class:`RvnApiError`.
+* Auth (v0.30.0): when the API runs with auth on, pass ``api_key`` (or set
+  the ``RVN_API_KEY`` env var) and the client sends it as
+  ``Authorization: Bearer <key>`` on every request. Without a key an
+  auth-on API answers 401, which raises :class:`RvnApiError` with status
+  401; auth-off APIs work exactly as before.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -52,10 +58,15 @@ class RvnApiClient:
         base_url: str = "http://127.0.0.1:3001",
         agent_id: str = "agent-1",
         timeout: float = 30.0,
+        api_key: Optional[str] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.agent_id = agent_id
         self.timeout = timeout
+        # An explicit key wins; otherwise fall back to the environment, so
+        # `RVN_API_KEY=rvn_... python agent.py` needs no code change.
+        # An empty string means "no key", like omitting it entirely.
+        self.api_key = api_key or os.environ.get("RVN_API_KEY") or None
 
     # -- transport -----------------------------------------------------
 
@@ -71,11 +82,14 @@ class RvnApiClient:
         if query:
             url += "?" + urllib.parse.urlencode(query)
         data = json.dumps(body).encode("utf-8") if body is not None else None
+        headers: dict[str, str] = {"content-type": "application/json"}
+        if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(
             url,
             data=data,
             method=method,
-            headers={"content-type": "application/json"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:

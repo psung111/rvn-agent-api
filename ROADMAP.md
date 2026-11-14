@@ -659,6 +659,32 @@ and logs the result in CHANGELOG.md.
     partition, webhooks, ratelimit, metrics, quorum, langchain suites
     still green. Remainder: MCP server + LangChain client key
     passthrough, and per-key scopes (e.g. read-only keys).
+  - [x] 2026-11-14 — v0.30.0 MCP + LangChain key passthrough (slice 2,
+    item partial): the MCP server reads `RVN_API_KEY` and sends it as
+    `Authorization: Bearer <key>` on every proxied request (empty =
+    unset, so auth-off APIs work exactly as before; the key is never
+    logged — the startup line says only whether one is set). A 401
+    from the API now surfaces as `isError` on every tool, including
+    the three submit tools (`issue_asset` / `reissue_asset` /
+    `transfer_asset`) that previously treated only 403/429 as errors —
+    a missing or revoked key is loud instead of a success-shaped
+    payload. The LangChain client takes an `api_key` argument
+    (explicit key wins, else the `RVN_API_KEY` env var, else none)
+    and sends the same Bearer header on every request; a 401 raises
+    `RvnApiError` with status 401, which the tools turn into
+    `{"error", "status": 401}`. No new tools: the key rides the
+    existing proxies. Verified with new `pnpm test:mcp-auth`
+    (`demo/mcp-auth-test.ts`, 14 checks: keyed MCP issues as its own
+    agent and 403s as another, keyless and wrong-key MCP 401 on every
+    tool incl. submits, stderr asserted key-free, chain valid) and
+    new auth-on checks in `pnpm test:langchain` (keyless/wrong-key
+    401s, keyed issue ALLOWs, env-var pickup with explicit-arg
+    override, agent-mismatch 403 payload, keyed tool issue, keyless
+    tool 401); demo, mcp-smoke, approvals, telegram-callback,
+    simulate, reissue, subasset, unique, presets, anomaly, store,
+    archive, migrations, partition, webhooks, ratelimit, metrics,
+    quorum, auth suites still green. Remainder: per-key scopes (e.g.
+    read-only keys).
 - [ ] **OpenAPI spec + generated docs** — the API has grown to ~20
   routes with no machine-readable contract. Add a hand-maintained
   `openapi.yaml` (or generate it from the route table) covering every

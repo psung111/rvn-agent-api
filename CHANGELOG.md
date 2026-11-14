@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-11-14 — v0.30.0 (MCP + LangChain key passthrough, slice 2 — item partial)
+
+- API-key authentication, slice 2: the MCP server and the LangChain
+  client pass the key through, so both adapters work against an
+  auth-on API. The MCP server reads `RVN_API_KEY` from its
+  environment and sends it as `Authorization: Bearer <key>` on every
+  proxied request (an empty value counts as unset, so auth-off APIs
+  work exactly as before); the startup log says only whether a key is
+  set — the key itself never appears in logs. A 401 from the API now
+  surfaces as `isError` on every tool, including the three submit
+  tools (`issue_asset`, `reissue_asset`, `transfer_asset`) that
+  previously treated only 403/429 as errors, so a missing or revoked
+  key is loud instead of a success-shaped payload.
+- The LangChain client takes an `api_key` argument (an explicit key
+  wins over the `RVN_API_KEY` env var, which is the fallback; an
+  empty string means no key) and sends the same Bearer header on
+  every request. A 401 raises `RvnApiError` with status 401 — the
+  submit routes' 403 pass-through is untouched, so DENY decisions
+  still return their payload — and the LangChain tools turn the 401
+  into `{"error", "status": 401}`. No new tools: the key rides the
+  existing client and proxies.
+- `initialize` now reports server version 0.30.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`); README gained the
+  `RVN_API_KEY` config for the MCP server and the `api_key` example
+  for the LangChain client, and the auth section no longer says the
+  adapters need auth off (it also corrects the stale "17 tools" to
+  21).
+- New `pnpm test:mcp-auth` (`demo/mcp-auth-test.ts`, 14 checks):
+  boots its own auth-on API, issues a per-agent key through the
+  operator key, and proves the keyed MCP server lists assets, issues
+  as its own agent (ALLOW), and 403s as another agent (policy read
+  included); a keyless MCP server 401s on list/issue/transfer, a
+  wrong-key server 401s on list, and the keyed server's stderr is
+  asserted to never contain the raw key; the audit chain stays
+  valid. `pnpm test:langchain` gained an auth-on section (keyless
+  and wrong-key clients raise 401, health stays open, keyed client
+  issues ALLOW, env-var pickup with explicit-argument override,
+  agent-mismatch 403 payload, keyed tool issue, keyless tool 401).
+  `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:mcp-auth` script. No
+  local Postgres on this VM, so the Postgres live legs were skipped
+  (as in recent sessions).
+- Remainder of the API-key authentication item: per-key scopes (e.g.
+  read-only keys).
+
 ## 2026-11-13 — v0.29.0 (API-key authentication, slice 1 — item partial)
 
 - API-key authentication, slice 1: the core auth — key issuance and

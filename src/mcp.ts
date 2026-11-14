@@ -33,8 +33,21 @@
  *   "rvn-agent-api": {
  *     "command": "pnpm",
  *     "args": ["--dir", "/path/to/rvn-agent-api", "mcp"],
- *     "env": { "RVN_API_URL": "http://127.0.0.1:3001" }
+ *     "env": {
+ *       "RVN_API_URL": "http://127.0.0.1:3001",
+ *       "RVN_API_KEY": "rvn_<key issued for the agent>"
+ *     }
  *   }
+ *
+ * Auth (v0.30.0): when the API runs with auth on, the MCP server must
+ * present a key or every tool call 401s. Set `RVN_API_KEY` to an issued
+ * per-agent key (or the operator key) and it is sent as
+ * `Authorization: Bearer <key>` on every request. Without it, the server
+ * still starts — auth-off APIs work as before — but an auth-on API
+ * answers 401 and the tools surface that as an error. The key is never
+ * logged. A 401 from the API surfaces as isError on every tool, so a
+ * missing or revoked key is loud instead of a silent success-shaped
+ * payload.
  *
  * Protocol: JSON-RPC 2.0 over newline-delimited stdio (the stdio framing the
  * MCP TypeScript SDK uses). Speaks initialize / tools/list / tools/call /
@@ -42,6 +55,8 @@
  */
 
 const API = process.env.RVN_API_URL ?? 'http://127.0.0.1:3001';
+/** Per-agent (or operator) API key, sent as a Bearer token when set. */
+const API_KEY = process.env.RVN_API_KEY ?? '';
 const PROTOCOL_VERSION = '2024-11-05';
 
 const log = (...args: unknown[]) => console.error('[mcp]', ...args);
@@ -371,7 +386,11 @@ function textResult(value: unknown, isError = false): ToolResult {
 async function api(path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> {
   const res = await fetch(`${API}${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    headers: {
+      'content-type': 'application/json',
+      ...(API_KEY ? { authorization: `Bearer ${API_KEY}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   let body: unknown = null;
   try {
@@ -398,7 +417,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
         }),
       });
       const b = body as { decision?: { kind?: string } };
-      const denied = status === 403 || status === 429 || b.decision?.kind === 'DENY';
+      const denied = status === 401 || status === 403 || status === 429 || b.decision?.kind === 'DENY';
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, denied);
     }
     case 'issue_unique': {
@@ -430,7 +449,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
         }),
       });
       const b = body as { decision?: { kind?: string } };
-      const denied = status === 403 || status === 429 || b.decision?.kind === 'DENY';
+      const denied = status === 401 || status === 403 || status === 429 || b.decision?.kind === 'DENY';
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, denied);
     }
     case 'transfer_asset': {
@@ -444,7 +463,7 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
         }),
       });
       const b = body as { decision?: { kind?: string } };
-      const denied = status === 403 || status === 429 || b.decision?.kind === 'DENY';
+      const denied = status === 401 || status === 403 || status === 429 || b.decision?.kind === 'DENY';
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, denied);
     }
     case 'issue_subasset': {
@@ -603,7 +622,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.29.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.30.0' },
       });
     }
     case 'notifications/initialized':
@@ -633,6 +652,7 @@ function handle(req: JsonRpcRequest): void {
 
 async function main(): Promise<void> {
   log(`starting; proxying to ${API}`);
+  log(API_KEY ? 'RVN_API_KEY set — sending Bearer auth on every request' : 'no RVN_API_KEY — auth-on APIs will answer 401');
   let buffer = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk: string) => {

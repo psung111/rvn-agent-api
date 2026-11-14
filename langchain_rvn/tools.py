@@ -19,6 +19,11 @@ Usage::
 
     tools = get_tools(RvnApiClient("http://127.0.0.1:3001", agent_id="agent-1"))
     # hand `tools` to any LangChain agent executor
+
+When the API runs with auth on, pass ``api_key=...`` to the client (or
+set the ``RVN_API_KEY`` env var) and every tool call carries it as a
+Bearer token; without a key the tools return
+``{"error": ..., "status": 401}``.
 """
 
 from __future__ import annotations

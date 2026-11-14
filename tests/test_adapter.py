@@ -32,10 +32,13 @@ except ImportError:
     print("FAIL  langchain-core is required: pip install langchain-core")
     sys.exit(1)
 
-from langchain_rvn import RvnApiClient, get_tools  # noqa: E402
+from langchain_rvn import RvnApiClient, RvnApiError, get_tools  # noqa: E402
 
 API_PORT = 3124
 API = f"http://127.0.0.1:{API_PORT}"
+AUTH_PORT = 3125
+AUTH_API = f"http://127.0.0.1:{AUTH_PORT}"
+OPERATOR_KEY = "rvn_operator-testkey-0123456789abcdef"
 AGENT = "lc-agent"
 DEST = "RTestDestinationAddress11111111111111"
 
@@ -51,11 +54,14 @@ def check(name, cond, detail=None):
             print("      ", detail)
 
 
-def boot_api():
+def boot_api(port=API_PORT, extra_env=None):
+    """Boot the API on `port`; extra_env adds env vars (e.g. auth on)."""
+    api = f"http://127.0.0.1:{port}"
     child = subprocess.Popen(
         [os.path.join(REPO, "node_modules", ".bin", "tsx"),
          os.path.join(REPO, "src", "server.ts")],
-        env={**os.environ, "PORT": str(API_PORT), "MOCK_RVN": "true"},
+        env={**os.environ, "PORT": str(port), "MOCK_RVN": "true",
+             **(extra_env or {})},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         # tsx spawns a node child: kill the whole group, or the API survives
@@ -64,7 +70,7 @@ def boot_api():
     )
     for _ in range(120):
         try:
-            with urllib.request.urlopen(f"{API}/v1/health", timeout=2) as resp:
+            with urllib.request.urlopen(f"{api}/v1/health", timeout=2) as resp:
                 if resp.status == 200:
                     return child
         except Exception:
@@ -80,6 +86,29 @@ def kill_api(child):
         os.killpg(os.getpgid(child.pid), signal.SIGTERM)
     except Exception:
         child.kill()
+
+
+def _raw(method, url, body=None, key=None):
+    """Minimal raw request (no client): used for the admin surface, which
+    the client deliberately does not wrap."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"content-type": "application/json"})
+    if key is not None:
+        req.add_header("authorization", f"Bearer {key}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        return err.code, json.loads(err.read().decode("utf-8"))
+
+
+def issue_agent_key(api, agent):
+    """Issue a per-agent key through the admin surface (operator key)."""
+    status, payload = _raw("POST", f"{api}/v1/admin/api-keys",
+                           {"agentId": agent}, key=OPERATOR_KEY)
+    assert status == 200, (status, payload)
+    return payload["key"]
 
 
 def main():
@@ -233,6 +262,74 @@ def main():
         check("tool archive_audit with an ancient cutoff archives nothing",
               tool_arch_none.get("archived") is False
               and tool_arch_none.get("entries") == 0, tool_arch_none)
+        # --- API-key auth passthrough (v0.30.0) ---
+        # A second, auth-on API: the client must send its key as a Bearer
+        # token, or every gated route raises RvnApiError(401).
+        auth_child = boot_api(AUTH_PORT, {"RVN_AUTH_ENABLED": "true",
+                                          "RVN_OPERATOR_API_KEY": OPERATOR_KEY})
+        try:
+            no_key = RvnApiClient(AUTH_API, agent_id=AGENT)
+            check("auth-on health stays open without a key",
+                  no_key.health().get("ok") is True)
+            try:
+                no_key.list_assets()
+                check("keyless client list_assets raises 401", False)
+            except RvnApiError as err:
+                check("keyless client list_assets raises 401", err.status == 401, err)
+            try:
+                RvnApiClient(AUTH_API, agent_id=AGENT,
+                             api_key="rvn_00000000000000000000000000000000").list_assets()
+                check("wrong-key client raises 401", False)
+            except RvnApiError as err:
+                check("wrong-key client raises 401", err.status == 401, err)
+
+            agent_key = issue_agent_key(AUTH_API, AGENT)
+            keyed = RvnApiClient(AUTH_API, agent_id=AGENT, api_key=agent_key)
+            keyed.apply_preset("permissive")
+            issued_auth = keyed.issue_asset("AUTHCOIN", "100", DEST)
+            check("keyed client issue ALLOWs on the auth-on API",
+                  issued_auth["decision"]["kind"] == "ALLOW", issued_auth)
+            mismatch = keyed.issue_asset("AUTHCOIN", "100", DEST,
+                                         agent_id="other-agent")
+            check("keyed client acting as another agent gets a 403 payload",
+                  "error" in mismatch and "decision" not in mismatch, mismatch)
+
+            # The RVN_API_KEY env var is the fallback when no api_key arg
+            # is passed; an explicit argument wins over the env var.
+            os.environ["RVN_API_KEY"] = agent_key
+            try:
+                env_client = RvnApiClient(AUTH_API, agent_id=AGENT)
+                env_issue = env_client.issue_asset("AUTHENV", "10", DEST)
+                check("client picks up RVN_API_KEY from the environment",
+                      env_issue["decision"]["kind"] == "ALLOW", env_issue)
+                override = RvnApiClient(
+                    AUTH_API, agent_id=AGENT,
+                    api_key="rvn_00000000000000000000000000000000")
+                try:
+                    override.list_assets()
+                    check("explicit api_key beats a wrong env key (401)", False)
+                except RvnApiError as err:
+                    check("explicit api_key beats a wrong env key (401)",
+                          err.status == 401, err)
+            finally:
+                del os.environ["RVN_API_KEY"]
+
+            auth_tools = get_tools(keyed)
+            auth_by_name = {t.name: t for t in auth_tools}
+            tool_auth_issue = json.loads(auth_by_name["issue_asset"].invoke(
+                {"name": "AUTHTOOL", "qty": "50", "to_address": DEST}))
+            check("tool issue ALLOWs through the keyed client",
+                  tool_auth_issue["decision"]["kind"] == "ALLOW", tool_auth_issue)
+            tool_no_key = json.loads(
+                get_tools(no_key)[0].invoke(
+                    {"name": "AUTHNOKEY", "qty": "50", "to_address": DEST}))
+            check("tool without a key returns a 401 error object",
+                  tool_no_key.get("status") == 401, tool_no_key)
+            auth_audit = keyed.get_audit()
+            check("auth-on audit chain valid", auth_audit.get("chainValid") is True,
+                  auth_audit)
+        finally:
+            kill_api(auth_child)
     finally:
         kill_api(child)
 

@@ -21,9 +21,9 @@
  * `RVN_AUTH_ENABLED=true` or when an operator key is set — either way
  * the server says so at boot and `/v1/health` reports the mode.
  *
- * Remainder (slice 2): the MCP server and LangChain client passing the
- * key through (`RVN_API_KEY` / an `api_key` client argument), and a
- * per-key scope so a key can be read-only.
+ * Remainder: a per-key scope so a key can be read-only. The MCP server
+ * passes its key through from `RVN_API_KEY` (v0.30.0) and the LangChain
+ * client from its `api_key` argument / `RVN_API_KEY` (v0.30.0).
  */
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 

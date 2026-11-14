@@ -96,8 +96,11 @@ again. A wrong or missing key gets 401 and the attempt is audited as
 only act as its own agent: submitting or reading policy as another agent
 gets 403, and omitting `agentId` defaults to the key's agent. Revoking a
 key takes effect immediately. `/v1/health` reports the auth mode and the
-live-key count. (MCP/LangChain key passthrough is the next slice; until
-then those adapters need auth off.)
+live-key count. The adapters pass the key through: the MCP server reads
+`RVN_API_KEY`, and the LangChain client takes an `api_key` argument (or
+the same `RVN_API_KEY` env var) and sends it as a Bearer token on every
+request — without it, an auth-on API answers 401 and the tools surface
+that as an error instead of a success-shaped payload.
 
 ## MCP server
 
@@ -108,9 +111,16 @@ AI agents can call the API natively instead of raw REST. Start the REST API
 "rvn-agent-api": {
   "command": "pnpm",
   "args": ["--dir", "/path/to/rvn-agent-api", "mcp"],
-  "env": { "RVN_API_URL": "http://127.0.0.1:3001" }
+  "env": {
+    "RVN_API_URL": "http://127.0.0.1:3001",
+    "RVN_API_KEY": "rvn_<key issued for the agent>"
+  }
 }
 ```
+
+With auth on, `RVN_API_KEY` is required — without it every tool call
+401s. Verify with `pnpm mcp-smoke` (API must be running, auth off) and
+`pnpm test:mcp-auth` (boots its own auth-on API).
 
 Tools: `issue_asset`, `reissue_asset`, `transfer_asset`, `simulate_intent`,
 `approve_intent`, `deny_intent`, `pending_intents`, `list_assets`, `get_audit`,
@@ -129,9 +139,14 @@ from langchain_rvn import RvnApiClient, get_tools
 
 tools = get_tools(RvnApiClient("http://127.0.0.1:3001", agent_id="agent-1"))
 # hand `tools` to any LangChain agent executor
+
+# With auth on, pass api_key=... (or set RVN_API_KEY); without it the
+# tools return {"error": ..., "status": 401}.
+tools = get_tools(RvnApiClient("http://127.0.0.1:3001", agent_id="agent-1",
+                               api_key="rvn_<key issued for the agent>"))
 ```
 
-The client (`client.py`) is stdlib-only and covers every route; the 17
+The client (`client.py`) is stdlib-only and covers every route; the 21
 tools (`tools.py`) return JSON strings — decisions with reason codes, held
 intent ids, or `{"error", "status"}` objects. Install from a checkout with
 `pip install ./langchain_rvn` (the package builds a valid wheel and sdist;
