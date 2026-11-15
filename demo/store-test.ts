@@ -180,6 +180,20 @@ async function runSuite(label: string, store: Store) {
   const listed = await store.apikeys.list(`${label}-key-agent`);
   check('api key list filters by agent, oldest first',
     listed.length === 2 && listed[0].id === record.id && listed[1].id === record2.id, listed.map((r) => r.id));
+  // Scoped keys (v0.31.0): the scope list round-trips through the seam,
+  // and a legacy record built without scopes reads back without one —
+  // the server resolves that to full access via scopesOf.
+  const { record: scopedRecord } = generateApiKey(`${label}-key-agent`, Date.now(), ['read']);
+  await store.apikeys.issue(scopedRecord);
+  const scopedByHash = await store.apikeys.getByHash(scopedRecord.keyHash);
+  check('scoped api key round-trips its scope list',
+    JSON.stringify(scopedByHash?.scopes) === '["read"]', scopedByHash);
+  const { record: legacyBase } = generateApiKey(`${label}-key-agent`);
+  const legacyRecord = { ...legacyBase, scopes: undefined };
+  await store.apikeys.issue(legacyRecord);
+  check('unscoped api key reads back without scopes',
+    (await store.apikeys.getById(legacyRecord.id))?.scopes === undefined,
+    await store.apikeys.getById(legacyRecord.id));
   check('api key list without a filter includes the agent keys',
     (await store.apikeys.list()).some((r) => r.id === record.id));
   const revoked = await store.apikeys.revoke(record.id, 4242);

@@ -68,7 +68,7 @@ verifies clean.
 | GET | `/v1/ratelimit/:agentId` | rate-limit stats for an agent (read-only) |
 | GET | `/v1/anomaly/:agentId?windowHours=` | anomaly stats for an agent: holds raised by signal, holds still pending, thresholds in force (read-only) |
 | GET | `/v1/metrics` | ops metrics: decision counts by kind and reason code, rate-limit 429s by agent and kind, webhook deliveries by endpoint, approval hold age, store backend (read-only) |
-| POST | `/v1/admin/api-keys` | issue an API key for an agent (operator key only; the raw key is returned once) |
+| POST | `/v1/admin/api-keys` | issue an API key for an agent (operator key only; the raw key is returned once; optional `scopes: ["read"]` for a read-only key) |
 | GET | `/v1/admin/api-keys` | list issued keys (operator key only; prefixes and timestamps, never hashes) |
 | POST | `/v1/admin/api-keys/:id/revoke` | revoke a key immediately (operator key only) |
 
@@ -96,11 +96,35 @@ again. A wrong or missing key gets 401 and the attempt is audited as
 only act as its own agent: submitting or reading policy as another agent
 gets 403, and omitting `agentId` defaults to the key's agent. Revoking a
 key takes effect immediately. `/v1/health` reports the auth mode and the
-live-key count. The adapters pass the key through: the MCP server reads
+live-key count.
+
+Per-key scopes (v0.31.0): issue a key with an optional `scopes` array —
+`['read']` for a read-only key, `['write']` for a write-only one, omitted
+(or `['read', 'write']`) for full access:
+
+```bash
+curl -X POST http://127.0.0.1:3001/v1/admin/api-keys \
+  -H "Authorization: Bearer $RVN_OPERATOR_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"agentId": "monitor", "scopes": ["read"]}'
+```
+
+The gate is method-based: `read` allows GET/HEAD routes, `write` allows
+everything else (POST/PUT/DELETE). A read-only key can list assets,
+read policies, and check metrics, but a submit, policy PUT, approve,
+or even a simulate (it is a POST, despite having no side effects) gets
+403, audited as `AUTH_FAILED` with reason `scope_insufficient`. Keys
+issued before scopes existed carry no scope list and keep full access.
+The operator key is always full-scope. Listings show each key's scopes;
+an invalid scope list (unknown scope, empty array, non-array) is a 400
+at issue time, so a half-valid request can never silently mint a
+full-access key. The adapters pass the key through: the MCP server reads
 `RVN_API_KEY`, and the LangChain client takes an `api_key` argument (or
 the same `RVN_API_KEY` env var) and sends it as a Bearer token on every
 request — without it, an auth-on API answers 401 and the tools surface
-that as an error instead of a success-shaped payload.
+that as an error instead of a success-shaped payload. A scoped key rides
+the same path: a read-only key's MCP/LangChain submits surface the 403
+as an error, while its reads work unchanged.
 
 ## MCP server
 

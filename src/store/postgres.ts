@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { makeChainedEntry, verifyChain, type AuditEntry, type AuditKind } from '../audit.js';
-import type { ApiKeyRecord } from '../auth/keys.js';
+import type { ApiKeyRecord, ApiScope } from '../auth/keys.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
 import { applyMigrations, loadMigrations, type Migration } from './migrations.js';
 import { auditPartitionDdl, auditPartitionFor } from './partitions.js';
@@ -216,6 +216,7 @@ class PostgresRateLimitStore implements RateLimitStore {
 function rowToApiKey(r: {
   id: string; agent_id: string; key_hash: string; key_prefix: string;
   created_at_ms: string | number; revoked_at_ms: string | number | null;
+  scopes: string[] | null;
 }): ApiKeyRecord {
   return {
     id: r.id,
@@ -224,6 +225,10 @@ function rowToApiKey(r: {
     keyPrefix: r.key_prefix,
     createdAtMs: Number(r.created_at_ms),
     ...(r.revoked_at_ms === null ? {} : { revokedAtMs: Number(r.revoked_at_ms) }),
+    // NULL means full access (a key issued before v0.31.0); the server
+    // resolves it leniently via scopesOf, so the column is only written
+    // through when scopes were set at issue time.
+    ...(r.scopes === null ? {} : { scopes: r.scopes as ApiScope[] }),
   };
 }
 
@@ -231,9 +236,9 @@ class PostgresApiKeyStore implements ApiKeyStore {
   constructor(private pool: Pool) {}
   async issue(record: ApiKeyRecord): Promise<void> {
     await this.pool.query(
-      `INSERT INTO api_keys (id, agent_id, key_hash, key_prefix, created_at_ms, revoked_at_ms)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [record.id, record.agentId, record.keyHash, record.keyPrefix, record.createdAtMs, record.revokedAtMs ?? null],
+      `INSERT INTO api_keys (id, agent_id, key_hash, key_prefix, created_at_ms, revoked_at_ms, scopes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [record.id, record.agentId, record.keyHash, record.keyPrefix, record.createdAtMs, record.revokedAtMs ?? null, record.scopes ?? null],
     );
   }
   async getByHash(keyHash: string): Promise<ApiKeyRecord | undefined> {

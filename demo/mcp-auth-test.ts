@@ -186,8 +186,8 @@ async function main() {
         protocolVersion: '2024-11-05',
         clientInfo: { name: 'mcp-auth-test', version: '0.1.0' },
       });
-      check('initialize reports server version 0.30.0',
-        init.result?.serverInfo?.version === '0.30.0', init.result?.serverInfo);
+      check('initialize reports server version 0.31.0',
+        init.result?.serverInfo?.version === '0.31.0', init.result?.serverInfo);
       keyed.child.stdin!.write(
         `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`,
       );
@@ -254,7 +254,27 @@ async function main() {
       wrong.kill();
     }
 
-    // --- 4. Chain still valid ---
+    // --- 4. MCP with a read-only key (v0.31.0 scopes) ---
+    const roIssued = await req('POST', '/v1/admin/api-keys', { agentId: AGENT, scopes: ['read'] }, OPERATOR_KEY);
+    check('operator issues a read-only key for the MCP agent',
+      roIssued.status === 200 && JSON.stringify(roIssued.json?.record?.scopes) === '["read"]', roIssued);
+    const ro = await spawnMcp({ RVN_API_KEY: roIssued.json.key as string });
+    try {
+      await ro.send('initialize', { protocolVersion: '2024-11-05' });
+      const assets = await toolCall(ro, 'list_assets', {});
+      check('read-only MCP list_assets works', assets.ok && Array.isArray(assets.body.assets), assets.body);
+      const issue = await toolCall(ro, 'issue_asset', {
+        agentId: AGENT, name: 'MCPROCOIN', qty: '100', toAddress: DEST,
+      });
+      check('read-only MCP issue_asset 403s as an error (scope, not auth)',
+        !issue.ok && issue.body.httpStatus === 403, issue.body);
+      const policyOk = await toolCall(ro, 'get_policy', { agentId: AGENT });
+      check('read-only MCP reads its own policy', policyOk.ok && policyOk.body.agentId === AGENT, policyOk.body);
+    } finally {
+      ro.kill();
+    }
+
+    // --- 5. Chain still valid ---
     const audit = await req('GET', '/v1/audit?limit=50', undefined, OPERATOR_KEY);
     check('audit chain stays valid', audit.json?.chainValid === true, audit.json);
   } finally {

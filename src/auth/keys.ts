@@ -21,9 +21,10 @@
  * `RVN_AUTH_ENABLED=true` or when an operator key is set — either way
  * the server says so at boot and `/v1/health` reports the mode.
  *
- * Remainder: a per-key scope so a key can be read-only. The MCP server
- * passes its key through from `RVN_API_KEY` (v0.30.0) and the LangChain
- * client from its `api_key` argument / `RVN_API_KEY` (v0.30.0).
+ * Remainder: none — per-key scopes (v0.31.0, slice 3) complete the item.
+ * The MCP server passes its key through from `RVN_API_KEY` (v0.30.0)
+ * and the LangChain client from its `api_key` argument / `RVN_API_KEY`
+ * (v0.30.0).
  */
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 
@@ -38,6 +39,13 @@ export const OPERATOR_AGENT_ID = 'operator';
  * characters after `rvn_`) lets an operator identify a key in listings
  * without ever seeing the key itself. `revokedAtMs` is set instead of
  * deleting the record, so a revoked key stays auditable.
+ *
+ * `scopes` (v0.31.0, slice 3) limits what the key may do: `'read'` allows
+ * GET routes, `'write'` allows state-changing routes (POST/PUT/DELETE).
+ * An omitted scope list means full access — the same as `['read',
+ * 'write']` — so keys issued before scopes existed keep working
+ * unchanged, and the operator key (which is not a stored record) is
+ * always full-scope.
  */
 export interface ApiKeyRecord {
   id: string;
@@ -46,6 +54,49 @@ export interface ApiKeyRecord {
   keyPrefix: string;
   createdAtMs: number;
   revokedAtMs?: number;
+  scopes?: ApiScope[];
+}
+
+/** The capabilities a key may carry. `read` = GET routes; `write` = mutations. */
+export type ApiScope = 'read' | 'write';
+
+/** Every scope, in canonical order — the full-access scope set. */
+export const ALL_SCOPES: readonly ApiScope[] = ['read', 'write'];
+
+const KNOWN_SCOPES: ReadonlySet<string> = new Set(ALL_SCOPES);
+
+/**
+ * Strict scope validation for the admin issue surface: the value must be
+ * a non-empty array of known scope strings. Returns the scopes in
+ * canonical order, deduplicated, or undefined when invalid — the caller
+ * answers 400. An empty array would be a key that can do nothing, which
+ * is a config error, not a useful key.
+ */
+export function parseScopes(value: unknown): ApiScope[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const seen = new Set<ApiScope>();
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !KNOWN_SCOPES.has(entry)) return undefined;
+    seen.add(entry as ApiScope);
+  }
+  return ALL_SCOPES.filter((s) => seen.has(s));
+}
+
+/**
+ * Lenient scope resolution for a stored record: a well-formed scope list
+ * is used as-is; a missing or malformed list degrades to full access,
+ * never a crash — so legacy records (issued before v0.31.0, with no
+ * scopes column) and corrupt rows keep working.
+ */
+export function scopesOf(record: ApiKeyRecord): ApiScope[] {
+  if (!Array.isArray(record.scopes)) return [...ALL_SCOPES];
+  const parsed = parseScopes(record.scopes);
+  return parsed ?? [...ALL_SCOPES];
+}
+
+/** Whether a stored key carries a scope (full access when unscopped). */
+export function keyAllowsScope(record: ApiKeyRecord, scope: ApiScope): boolean {
+  return scopesOf(record).includes(scope);
 }
 
 /** What an issue call returns: the raw key (shown once) plus its record. */
@@ -63,9 +114,14 @@ export function hashApiKey(key: string): string {
  * Issue a key for an agent. The raw key is `rvn_` + 32 random hex chars
  * (128 bits of entropy); the record carries only its hash. Callers must
  * show the raw key to the operator exactly once — it cannot be recovered
- * from the record afterwards.
+ * from the record afterwards. `scopes` limits the key (default: full
+ * access); pass `['read']` for a read-only key.
  */
-export function generateApiKey(agentId: string, nowMs: number = Date.now()): IssuedApiKey {
+export function generateApiKey(
+  agentId: string,
+  nowMs: number = Date.now(),
+  scopes: ApiScope[] = [...ALL_SCOPES],
+): IssuedApiKey {
   const key = `${API_KEY_PREFIX}${randomBytes(16).toString('hex')}`;
   const record: ApiKeyRecord = {
     id: randomUUID(),
@@ -73,6 +129,7 @@ export function generateApiKey(agentId: string, nowMs: number = Date.now()): Iss
     keyHash: hashApiKey(key),
     keyPrefix: key.slice(API_KEY_PREFIX.length, API_KEY_PREFIX.length + 8),
     createdAtMs: nowMs,
+    scopes: [...scopes],
   };
   return { key, record };
 }

@@ -21,6 +21,12 @@
  *     non-operator key gets 403 on the admin surface; revoking the key
  *     makes it 401 immediately; failed attempts are audited as
  *     AUTH_FAILED and the chain stays valid
+ *   - per-key scopes (v0.31.0, slice 3): a read-only key (['read']) can
+ *     GET but gets 403 on every mutation (submit, PUT, simulate, approve);
+ *     a write-only key (['write']) can submit but gets 403 on GETs;
+ *     invalid scope lists 400 at issue time; omitted scopes mean full
+ *     access; a scope denial is audited as AUTH_FAILED with reason
+ *     scope_insufficient
  *
  * Nothing touches the network: the API is localhost-only.
  */
@@ -31,8 +37,11 @@ import {
   authConfigFromEnv,
   generateApiKey,
   hashApiKey,
+  keyAllowsScope,
   parseBearerHeader,
+  parseScopes,
   publicApiKey,
+  scopesOf,
   verifyApiKey,
   verifyOperatorKey,
 } from '../src/auth/keys.js';
@@ -142,6 +151,33 @@ async function main() {
     !verifyApiKey({ ...issued.record, keyHash: 'not-a-hash' }, issued.key));
   check('public view carries no hash',
     !('keyHash' in publicApiKey(issued.record)) && publicApiKey(issued.record).keyPrefix === issued.record.keyPrefix);
+
+  // --- 1b. Unit: per-key scopes (v0.31.0, slice 3) ---
+  check('parseScopes accepts a read-only list',
+    JSON.stringify(parseScopes(['read'])) === '["read"]', parseScopes(['read']));
+  check('parseScopes accepts both scopes and normalizes order and dedup',
+    JSON.stringify(parseScopes(['write', 'read', 'read'])) === '["read","write"]');
+  check('parseScopes rejects an empty list', parseScopes([]) === undefined);
+  check('parseScopes rejects an unknown scope', parseScopes(['read', 'admin']) === undefined);
+  check('parseScopes rejects a non-array', parseScopes('read') === undefined);
+  check('parseScopes rejects a non-string entry', parseScopes(['read', 7]) === undefined);
+  check('scopesOf defaults an unscoped record to full access',
+    JSON.stringify(scopesOf({} as never)) === '["read","write"]');
+  check('scopesOf keeps a read-only record read-only',
+    JSON.stringify(scopesOf({ scopes: ['read'] } as never)) === '["read"]');
+  check('scopesOf degrades a malformed list to full access',
+    JSON.stringify(scopesOf({ scopes: ['admin'] } as never)) === '["read","write"]');
+  check('keyAllowsScope gates a read-only key',
+    keyAllowsScope({ scopes: ['read'] } as never, 'read') &&
+      !keyAllowsScope({ scopes: ['read'] } as never, 'write'));
+  check('keyAllowsScope lets an unscoped record do anything',
+    keyAllowsScope({} as never, 'read') && keyAllowsScope({} as never, 'write'));
+  const scopedIssued = generateApiKey('agent-2', Date.now(), ['read']);
+  check('generateApiKey stores the requested scopes',
+    JSON.stringify(scopedIssued.record.scopes) === '["read"]', scopedIssued.record);
+  check('public view carries scopes but no hash',
+    JSON.stringify(publicApiKey(scopedIssued.record).scopes) === '["read"]' &&
+      !('keyHash' in publicApiKey(scopedIssued.record)));
 
   check('Bearer header parses', parseBearerHeader('Bearer abc123') === 'abc123');
   check('Bearer header rejects a non-Bearer scheme', parseBearerHeader('Basic abc123') === undefined);
@@ -266,10 +302,66 @@ async function main() {
     check('issuing a key without an agentId 400s',
       (await post('/v1/admin/api-keys', {}, OPERATOR_KEY)).status === 400);
 
+    // --- 4. Integration: per-key scopes (v0.31.0, slice 3) ---
+    const roIssued = await post('/v1/admin/api-keys', { agentId: 'agent-2', scopes: ['read'] }, OPERATOR_KEY);
+    check('operator issues a read-only key',
+      roIssued.status === 200 && JSON.stringify(roIssued.json?.record?.scopes) === '["read"]', roIssued);
+    const roKey = roIssued.json.key as string;
+    check('read-only key lists assets', (await get('/v1/assets', roKey)).status === 200);
+    check('read-only key reads its own policy',
+      (await get('/v1/policies/agent-2', roKey)).status === 200);
+    check('read-only key cannot submit',
+      (await post('/v1/assets/issue', {
+        agentId: 'agent-2', name: 'AUTHCOIN', qty: '100', toAddress: DEST,
+      }, roKey)).status === 403);
+    check('read-only key cannot PUT a policy',
+      (await put('/v1/policies/agent-2', basePolicy('agent-2'), roKey)).status === 403);
+    check('read-only key cannot simulate (a POST needs the write scope)',
+      (await post('/v1/intents/simulate', {
+        op: 'issue', name: 'AUTHCOIN', qty: '100', toAddress: DEST,
+      }, roKey)).status === 403);
+    check('read-only key cannot approve',
+      (await post('/v1/intents/no-such/approve', {}, roKey)).status === 403);
+
+    const woIssued = await post('/v1/admin/api-keys', { agentId: 'agent-2', scopes: ['write'] }, OPERATOR_KEY);
+    check('operator issues a write-only key',
+      woIssued.status === 200 && JSON.stringify(woIssued.json?.record?.scopes) === '["write"]', woIssued);
+    const woKey = woIssued.json.key as string;
+    check('write-only key cannot list assets', (await get('/v1/assets', woKey)).status === 403);
+    const woSubmit = await post('/v1/assets/issue', {
+      agentId: 'agent-2', name: 'AUTHCOIN3', qty: '100', toAddress: DEST,
+    }, woKey);
+    check('write-only key submits', woSubmit.status === 200, woSubmit);
+
+    check('unknown scope 400s at issue time',
+      (await post('/v1/admin/api-keys', { agentId: 'agent-2', scopes: ['read', 'admin'] }, OPERATOR_KEY)).status === 400);
+    check('empty scopes 400 at issue time',
+      (await post('/v1/admin/api-keys', { agentId: 'agent-2', scopes: [] }, OPERATOR_KEY)).status === 400);
+    check('non-array scopes 400 at issue time',
+      (await post('/v1/admin/api-keys', { agentId: 'agent-2', scopes: 'read' }, OPERATOR_KEY)).status === 400);
+    const fullIssued = await post('/v1/admin/api-keys', { agentId: 'agent-2' }, OPERATOR_KEY);
+    check('omitted scopes issue a full-access key',
+      fullIssued.status === 200 && JSON.stringify(fullIssued.json?.record?.scopes) === '["read","write"]', fullIssued);
+    const fullKey = fullIssued.json.key as string;
+    check('full-access key submits',
+      (await post('/v1/assets/issue', {
+        agentId: 'agent-2', name: 'AUTHCOIN4', qty: '100', toAddress: DEST,
+      }, fullKey)).status === 200);
+    const adminList = await get('/v1/admin/api-keys', OPERATOR_KEY);
+    check('admin list shows each key scopes',
+      adminList.json?.keys?.some((k: any) => JSON.stringify(k.scopes) === '["read"]') === true, adminList.json);
+    // Revoke the scoped keys again so no extra live keys linger.
+    await post(`/v1/admin/api-keys/${roIssued.json.record.id}/revoke`, {}, OPERATOR_KEY);
+    await post(`/v1/admin/api-keys/${woIssued.json.record.id}/revoke`, {}, OPERATOR_KEY);
+    await post(`/v1/admin/api-keys/${fullIssued.json.record.id}/revoke`, {}, OPERATOR_KEY);
+
     // Failed attempts are audited and the chain stays valid.
     const audit = await get('/v1/audit?limit=50', OPERATOR_KEY);
     const kinds = (audit.json?.entries ?? []).map((e: any) => e.kind);
     check('failed auth attempts are audited as AUTH_FAILED', kinds.includes('AUTH_FAILED'), kinds);
+    check('scope denials are audited with reason scope_insufficient',
+      (audit.json?.entries ?? []).some((e: any) => e.kind === 'AUTH_FAILED' && e.detail?.reason === 'scope_insufficient'),
+      (audit.json?.entries ?? []).filter((e: any) => e.kind === 'AUTH_FAILED').map((e: any) => e.detail));
     check('key issue and revoke are audited',
       kinds.includes('API_KEY_ISSUED') && kinds.includes('API_KEY_REVOKED'), kinds);
     check('audit chain stays valid', audit.json?.chainValid === true, audit.json);

@@ -1,5 +1,78 @@
 # Changelog
 
+## 2026-11-15 — v0.31.0 (Per-key scopes, slice 3 — item complete)
+
+- API-key authentication, slice 3: per-key scopes, completing the item.
+  Every issued key now carries an optional scope list — `'read'`
+  (GET/HEAD routes) and `'write'` (POST/PUT/DELETE) — so an operator
+  can hand out read-only keys for monitoring agents and write-only keys
+  for submitters that never need to read. New in `src/auth/keys.ts`:
+  the `ApiScope` type, `parseScopes()` (strict: a non-empty array of
+  known scopes, deduplicated and returned in canonical order; anything
+  else is invalid), `scopesOf()` (lenient: a missing or malformed
+  stored list degrades to full access, never a crash — so keys issued
+  before v0.31.0 keep working unchanged), and `keyAllowsScope()`;
+  `generateApiKey()` takes optional scopes and defaults to full
+  access. Migration `0005_api_key_scopes` adds a nullable `scopes
+  TEXT[]` column to `api_keys` (NULL = full access, with a CHECK
+  keeping garbage out of the column); the Postgres store round-trips
+  the array and the memory store carries it on the record.
+- The server's auth gate enforces scopes after the admin check: a
+  non-operator key without the needed scope gets 403, audited as
+  `AUTH_FAILED` with reason `scope_insufficient` (key prefix only,
+  never the key). The rule is method-based on purpose: `POST
+  /v1/intents/simulate` needs the `write` scope even though it has no
+  side effects, so there are no per-route carve-outs to forget. The
+  operator key is always full-scope. `POST /v1/admin/api-keys`
+  accepts optional `scopes` in the issue body — an invalid list
+  (unknown scope, empty array, non-array) is a 400, so a half-valid
+  request can never silently mint a full-access key — and listings
+  show each key's scopes; the `API_KEY_ISSUED` audit entry records
+  them too. No new route or tool: a scoped key's MCP/LangChain submits
+  surface the 403 as an error through the existing error paths, while
+  its reads work unchanged.
+- `pnpm test:auth` extended (now 85 checks): scope parse/resolve
+  units (canonical ordering, dedup, empty/unknown/non-array/non-string
+  rejections, unscoped and malformed records degrading to full access,
+  `generateApiKey` storing the requested scopes, public view carrying
+  scopes but no hash) and an auth-on integration — a read-only key
+  lists assets and reads its own policy but gets 403 on submit, policy
+  PUT, simulate, and approve; a write-only key gets 403 on GETs and
+  submits; unknown/empty/non-array scope lists 400 at issue time;
+  omitted scopes issue a full-access key that submits; the admin list
+  shows each key's scopes; scope denials are audited with reason
+  `scope_insufficient`. `pnpm test:store` gained scoped-key round-trip
+  checks (scope list preserved, legacy unscoped record reads back
+  without scopes) on both backends; `demo/mcp-auth-test.ts` gained a
+  read-only MCP section (list and policy read work, issue 403s as an
+  error); `demo/migration-test.ts` and `demo/partition-test.ts` updated
+  for migration 0005. `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`,
+  `pnpm test:simulate`, `pnpm test:reissue`,
+  `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:langchain` still green. `initialize` now reports server
+  version 0.31.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README route table and auth section
+  document scopes.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content. No local Postgres on this VM, so the Postgres
+  live legs were skipped (as in recent sessions); the migration is
+  validated by the fake-pool runner in `pnpm test:migrations`. One
+  pre-existing quirk re-confirmed while verifying: `pnpm mcp-smoke`
+  is not idempotent against a reused server — the second run 429s on
+  the rate-limit bucket the first run left behind — so it was verified
+  once per fresh server, as the documented flow does.
+- The API-key authentication item is complete; the next top item is
+  the OpenAPI spec.
+
 ## 2026-11-14 — v0.30.0 (MCP + LangChain key passthrough, slice 2 — item partial)
 
 - API-key authentication, slice 2: the MCP server and the LangChain

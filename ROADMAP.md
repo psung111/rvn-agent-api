@@ -609,7 +609,7 @@ and logs the result in CHANGELOG.md.
     complete; the next top item is the first of the five newly
     appended backlog items below.
 
-- [ ] **API-key authentication** — the REST surface is currently
+- [x] **API-key authentication** — the REST surface is currently
   unauthenticated and relies on the localhost-only bind. Add per-agent
   API keys: keys issued per agentId, stored hashed, presented as
   `Authorization: Bearer <key>`; a wrong or missing key gets 401 and
@@ -617,7 +617,8 @@ and logs the result in CHANGELOG.md.
   key through. Localhost demo/tests keep working via an env-seeded
   operator key or an explicit unauthenticated-dev flag, so the demo
   loop never breaks. Keys rotate (issue/revoke/list) through a small
-  admin surface, and revocation takes effect immediately.
+  admin surface, and revocation takes effect immediately. Per-key
+  scopes (read-only keys) added in slice 3; the item is complete.
   - [x] 2026-11-13 — v0.29.0 API-key auth (slice 1, item partial): core
     auth — key issuance/verification, the REST gate, per-agent binding,
     and the admin surface. New `src/auth/keys.ts` — `generateApiKey()`
@@ -685,6 +686,43 @@ and logs the result in CHANGELOG.md.
     archive, migrations, partition, webhooks, ratelimit, metrics,
     quorum, auth suites still green. Remainder: per-key scopes (e.g.
     read-only keys).
+  - [x] 2026-11-15 — v0.31.0 per-key scopes (slice 3, item complete):
+    new optional scope list on every issued key — `'read'` (GET/HEAD
+    routes) and `'write'` (POST/PUT/DELETE) — so an operator can hand
+    out read-only keys for monitoring agents. New `ApiScope` type and
+    `parseScopes()` (strict: non-empty array of known scopes,
+    deduplicated, canonical order; anything else is invalid),
+    `scopesOf()` (lenient: a missing or malformed stored list degrades
+    to full access, never a crash — keys issued before v0.31.0 keep
+    working), and `keyAllowsScope()` in `src/auth/keys.ts`;
+    `generateApiKey()` takes optional scopes (default full access).
+    Migration `0005_api_key_scopes` adds a nullable `scopes TEXT[]`
+    column to `api_keys` (NULL = full access, with a CHECK keeping
+    garbage out); the Postgres store round-trips the array, the memory
+    store carries it on the record. The server's auth gate enforces
+    scopes after the admin check: a non-operator key without the
+    needed scope gets 403, audited as `AUTH_FAILED` with reason
+    `scope_insufficient`. The rule is method-based on purpose —
+    `POST /v1/intents/simulate` needs `write` even though it has no
+    side effects, so there are no per-route carve-outs to forget. The
+    operator key is always full-scope. `POST /v1/admin/api-keys`
+    accepts optional `scopes` (invalid lists 400, so a half-valid
+    request can never silently mint a full-access key); listings show
+    each key's scopes. No new route or tool: a scoped key's MCP /
+    LangChain submits surface the 403 as an error through the existing
+    error paths, while its reads work unchanged. Verified with new
+    checks in `pnpm test:auth` (now 85 checks: scope parse/resolve
+    units plus an auth-on integration — read-only key GETs, 403 on
+    submit/PUT/simulate/approve, write-only key 403 on GETs and
+    submits, 400s on bad scope lists, omitted scopes = full access,
+    admin list shows scopes, scope denials audited), new scoped
+    round-trip checks in `pnpm test:store`, a read-only MCP section
+    in `pnpm test:mcp-auth`, and migration/partition test updates for
+    0005; demo, mcp-smoke, approvals, telegram-callback, simulate,
+    reissue, subasset, unique, presets, anomaly, store, archive,
+    migrations, partition, webhooks, ratelimit, metrics, quorum,
+    auth, langchain suites still green. The API-key authentication
+    item is complete; the next top item is the OpenAPI spec.
 - [ ] **OpenAPI spec + generated docs** — the API has grown to ~20
   routes with no machine-readable contract. Add a hand-maintained
   `openapi.yaml` (or generate it from the route table) covering every

@@ -11,14 +11,18 @@ import {
   type AuditArchive,
 } from './audit/archive.js';
 import {
+  ALL_SCOPES,
   authConfigFromEnv,
   generateApiKey,
   hashApiKey,
   OPERATOR_AGENT_ID,
   parseBearerHeader,
+  parseScopes,
   publicApiKey,
+  scopesOf,
   verifyApiKey,
   verifyOperatorKey,
+  type ApiScope,
   type AuthConfig,
 } from './auth/keys.js';
 import {
@@ -133,13 +137,15 @@ async function main() {
   /**
    * Who is calling, resolved by the onRequest hook below. The operator
    * key (env-seeded) may act as any agent and use the admin surface; a
-   * per-agent key may only act as its own agent. When auth is off the
-   * identity is the operator, so the demo loop and all existing tests
-   * keep working unchanged.
+   * per-agent key may only act as its own agent. `scopes` is the key's
+   * scope set (v0.31.0) — undefined for the operator, which is
+   * full-scope. When auth is off the identity is the operator, so the
+   * demo loop and all existing tests keep working unchanged.
    */
   interface AuthIdentity {
     agentId: string;
     operator: boolean;
+    scopes?: ApiScope[];
   }
   const authOf = (req: any): AuthIdentity => req.auth as AuthIdentity;
 
@@ -185,15 +191,18 @@ async function main() {
   };
 
   /**
-   * The auth gate (v0.29.0). Every /v1 route except /v1/health (liveness)
-   * and /v1/telegram/webhook (which has its own Telegram secret check)
-   * requires a Bearer key when auth is on: the env-seeded operator key,
-   * or a key issued through the admin surface and stored hashed. A wrong
-   * or missing key gets 401 and the attempt is audited as AUTH_FAILED
-   * (the key prefix only — never the key itself). The admin surface
-   * additionally requires the operator key (403 otherwise). When auth is
-   * off the hook is a no-op and the identity is the operator, so the
-   * localhost demo loop is untouched.
+   * The auth gate (v0.29.0; scopes added v0.31.0). Every /v1 route except
+   * /v1/health (liveness) and /v1/telegram/webhook (which has its own
+   * Telegram secret check) requires a Bearer key when auth is on: the
+   * env-seeded operator key, or a key issued through the admin surface
+   * and stored hashed. A wrong or missing key gets 401 and the attempt
+   * is audited as AUTH_FAILED (the key prefix only — never the key
+   * itself). The admin surface additionally requires the operator key
+   * (403 otherwise). A per-agent key is further limited by its scopes:
+   * GET/HEAD needs 'read', anything else needs 'write' (403 with
+   * reason scope_insufficient otherwise). When auth is off the hook is
+   * a no-op and the identity is the operator, so the localhost demo
+   * loop is untouched.
    */
   app.addHook('onRequest', async (req, reply) => {
     const path = req.url.split('?')[0];
@@ -213,7 +222,8 @@ async function main() {
       } else {
         const record = await store.apikeys.getByHash(hashApiKey(presented));
         if (record && verifyApiKey(record, presented)) {
-          identity = { agentId: record.agentId, operator: false };
+          // scopesOf resolves legacy/unscoped records to full access.
+          identity = { agentId: record.agentId, operator: false, scopes: scopesOf(record) };
         }
       }
     }
@@ -232,6 +242,24 @@ async function main() {
         .append('AUTH_FAILED', 'auth', identity.agentId, { reason: 'admin_requires_operator_key', path })
         .catch((err) => app.log.warn({ err }, 'auth failure audit failed'));
       return reply.code(403).send({ error: 'admin routes require the operator key' });
+    }
+    // Scope gate (v0.31.0): a per-agent key may only use routes its
+    // scopes allow — GET/HEAD needs 'read', anything else needs 'write'.
+    // The rule is method-based on purpose: POST /v1/intents/simulate has
+    // no side effects, but it is a POST, so a read-only key cannot call
+    // it — one rule, no per-route carve-outs to forget. The operator key
+    // is full-scope and bypasses the gate. A denied attempt is a 403,
+    // audited as AUTH_FAILED with reason scope_insufficient.
+    if (!identity.operator) {
+      const needed: ApiScope = req.method === 'GET' || req.method === 'HEAD' ? 'read' : 'write';
+      // identity.scopes is always set for a stored key (scopesOf above);
+      // the fallback only covers a hand-built identity, which is full-scope.
+      if (!(identity.scopes ?? ALL_SCOPES).includes(needed)) {
+        await store.audit
+          .append('AUTH_FAILED', 'auth', identity.agentId, { reason: 'scope_insufficient', scope: needed, path })
+          .catch((err) => app.log.warn({ err }, 'auth failure audit failed'));
+        return reply.code(403).send({ error: `API key lacks the '${needed}' scope for this route` });
+      }
     }
   });
 
@@ -1373,13 +1401,14 @@ async function main() {
   });
 
   /**
-   * API-key admin surface (v0.29.0). The onRequest hook already requires
-   * the operator key for every /v1/admin/* route, so these handlers only
-   * do the key work. The raw key is returned exactly once, at issue
-   * time — it is never stored and can never be listed again. Listings
-   * carry the public view (id, agent, prefix, timestamps, revocation)
-   * and never a hash. Revocation takes effect immediately: the next
-   * request with that key gets 401. Every issue and revoke is audited.
+   * API-key admin surface (v0.29.0; scopes added v0.31.0). The onRequest
+   * hook already requires the operator key for every /v1/admin/* route,
+   * so these handlers only do the key work. The raw key is returned
+   * exactly once, at issue time — it is never stored and can never be
+   * listed again. Listings carry the public view (id, agent, prefix,
+   * scopes, timestamps, revocation) and never a hash. Revocation takes
+   * effect immediately: the next request with that key gets 401. Every
+   * issue and revoke is audited.
    */
   app.post('/v1/admin/api-keys', async (req, reply) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -1387,11 +1416,22 @@ async function main() {
     if (typeof agentId !== 'string' || !agentId.trim()) {
       return reply.code(400).send({ error: 'agentId is required' });
     }
-    const { key, record } = generateApiKey(agentId.trim());
+    // Optional scopes: a non-empty array of 'read' / 'write'. Omitted
+    // means full access. Anything else is a 400 — a half-valid scope
+    // list must never silently become a full-access key.
+    let scopes: ApiScope[] | undefined;
+    if (b.scopes !== undefined) {
+      scopes = parseScopes(b.scopes);
+      if (!scopes) {
+        return reply.code(400).send({ error: "scopes must be a non-empty array of 'read' and/or 'write'" });
+      }
+    }
+    const { key, record } = generateApiKey(agentId.trim(), Date.now(), scopes);
     await store.apikeys.issue(record);
     await store.audit.append('API_KEY_ISSUED', record.id, agentId.trim(), {
       keyId: record.id,
       keyPrefix: record.keyPrefix,
+      scopes: record.scopes,
     });
     return { key, record: publicApiKey(record) };
   });
