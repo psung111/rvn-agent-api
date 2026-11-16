@@ -27,6 +27,8 @@
  *       once, second distinct approver executes)
  *   23. quorum roster via MCP (hold carries the roster, a non-roster
  *       approval is a 403 with 0/2 of 3, roster members execute 2/2 of 3)
+ *   24. get_openapi via MCP (the contract: OpenAPI 3.0.3, version matches,
+ *       every route present, Decision schema carries the reason codes)
  *
  * Usage: pnpm mcp-smoke   (API must be running, default http://localhost:3001)
  */
@@ -112,7 +114,7 @@ async function main(): Promise<void> {
   // 2. tools/list
   const list = await send('tools/list');
   const names: string[] = (list.result?.tools ?? []).map((t: any) => t.name);
-  for (const want of ['issue_asset', 'transfer_asset', 'list_assets', 'get_audit', 'archive_audit']) {
+  for (const want of ['issue_asset', 'transfer_asset', 'list_assets', 'get_audit', 'archive_audit', 'get_openapi']) {
     check(`tools/list includes ${want}`, names.includes(want), names);
   }
 
@@ -456,6 +458,17 @@ async function main(): Promise<void> {
     rSecond.ok && rSecond.body.httpStatus === 200 && !!rSecond.body.txid &&
     rSecond.body.approvalsReceived === 2 && rSecond.body.approvalsRequired === 2 &&
     rSecond.body.approversTotal === 3, rSecond.body);
+
+  // 24. get_openapi via MCP (v0.32.0) — the contract, read-only: OpenAPI
+  // 3.0.3, version matches the package, every route is present, and the
+  // Decision schema carries the full reason-code enum.
+  const spec = await toolCall('get_openapi', {});
+  check('get_openapi via MCP returns the OpenAPI 3.0.3 contract at the package version',
+    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.32.0' &&
+    typeof spec.body.paths === 'object' && '/v1/assets/issue' in spec.body.paths &&
+    '/v1/openapi.json' in spec.body.paths &&
+    Array.isArray(spec.body.components?.schemas?.Decision?.properties?.reasonCodes?.items?.enum) &&
+    spec.body.components.schemas.Decision.properties.reasonCodes.items.enum.includes('RATE_LIMIT_EXCEEDED'), spec.body);
 
   child.kill();
   shuttingDown = true;

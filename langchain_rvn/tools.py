@@ -283,6 +283,18 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
+    def get_openapi() -> str:
+        """Read the API's OpenAPI 3.0.3 contract: every route, decision
+        shape, reason code, and error status the API can return. Use it to
+        code against the API instead of guessing request shapes — the
+        contract is asserted never to drift from the server. Public, no
+        key needed even with auth on. Read-only."""
+        try:
+            return _dump(client.get_openapi())
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
     def get_audit(limit: int = 50) -> str:
         """Read the tail of the hash-chained audit log with its chain
         validity flag. Use it to verify what actually happened."""
@@ -331,6 +343,7 @@ def build_tools(client: RvnApiClient) -> list:
         get_ratelimit,
         get_anomaly_stats,
         get_metrics,
+        get_openapi,
         get_audit,
         archive_audit,
         create_wallet,

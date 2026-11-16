@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-11-16 — v0.32.0 (OpenAPI spec + drift test, slice 1 — item partial)
+
+- OpenAPI spec, slice 1: the API's machine-readable contract is now
+  hand-maintained in `src/openapi.ts` and served verbatim at
+  `GET /v1/openapi.json` (OpenAPI 3.0.3, 27 routes: every route,
+  decision shape, the full reason-code enum, per-route request/response
+  shapes and error statuses — 400/401/403/404/409/410/429/502 where each
+  applies). The route is unauthenticated like `/v1/health`: the contract
+  is public, so agents can fetch it before they hold a key.
+- New `pnpm test:openapi` (`demo/openapi-test.ts`): document-shape checks
+  (OpenAPI 3.0.3, `info.version` matches `package.json`, every operation
+  has a summary and responses, every tag exists, every `$ref` resolves to
+  a declared component, every `{param}` in a path is declared, and the
+  reason-code enum covers every code the policy evaluator and the server
+  gates can emit); the drift check (the route registrations parsed out of
+  `src/server.ts` must be exactly the spec's method+path set, in both
+  directions — a route added without a spec entry, or a spec entry for a
+  removed route, fails the build); and a booted-API integration (the served
+  document is byte-identical to the module, every spec operation is probed
+  against the live server and never answers Fastify's route-not-found 404,
+  and on a second auth-on API the contract stays open without a key while
+  `/v1/metrics` still 401s — the exemption is specific, not auth broken).
+- Adapters keep the "cover every route" invariant: new `get_openapi` MCP
+  tool (a section 24 in `pnpm mcp-smoke` proves tools/list exposes it and
+  the call returns the 3.0.3 contract at the package version with the
+  Decision reason-code enum) and a LangChain client method + tool
+  (`langchain_rvn` now builds 22 tools). `initialize` now reports server
+  version 0.32.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README route table gained the openapi
+  row (plus the previously missing sub-asset, unique-asset, and Telegram
+  webhook rows) and a new "OpenAPI contract" section, and the auth section
+  now names the openapi exemption.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:openapi` script. No
+  local Postgres on this VM, so the Postgres live legs were skipped
+  (as in recent sessions).
+- Remainder of the OpenAPI spec item: generated docs (an HTML docs page
+  served from the spec).
+
 ## 2026-11-15 — v0.31.0 (Per-key scopes, slice 3 — item complete)
 
 - API-key authentication, slice 3: per-key scopes, completing the item.

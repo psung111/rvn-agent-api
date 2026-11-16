@@ -151,14 +151,14 @@ def main():
         # --- LangChain tools ---
         tools = get_tools(client)
         by_name = {t.name: t for t in tools}
-        check("21 tools built", len(tools) == 21, sorted(by_name))
+        check("22 tools built", len(tools) == 22, sorted(by_name))
         check("tool names cover every route",
               {"issue_asset", "reissue_asset", "issue_subasset", "issue_unique",
                "transfer_asset", "list_assets", "get_asset", "simulate_intent",
                "approve_intent", "deny_intent", "pending_intents", "get_policy",
                "set_policy", "list_presets", "apply_preset", "get_ratelimit",
-               "get_anomaly_stats", "get_metrics", "get_audit", "archive_audit",
-               "create_wallet"} == set(by_name))
+               "get_anomaly_stats", "get_metrics", "get_openapi", "get_audit",
+               "archive_audit", "create_wallet"} == set(by_name))
         stats = client.get_ratelimit()
         check("client get_ratelimit: unlimited agent reports limited:false",
               stats.get("limited") is False and stats.get("agentId") == AGENT, stats)
@@ -188,6 +188,18 @@ def main():
               tool_metrics.get("decisions", {}).get("total") ==
               metrics.get("decisions", {}).get("total")
               and tool_metrics.get("store") == "memory", tool_metrics)
+        spec = client.get_openapi()
+        check("client get_openapi: OpenAPI 3.0.3 contract with every route",
+              spec.get("openapi") == "3.0.3"
+              and "/v1/assets/issue" in spec.get("paths", {})
+              and "/v1/openapi.json" in spec.get("paths", {})
+              and "Decision" in spec.get("components", {}).get("schemas", {}),
+              sorted(spec.get("paths", {}).keys()))
+        tool_spec = json.loads(by_name["get_openapi"].invoke({}))
+        check("tool get_openapi matches the client shape",
+              tool_spec.get("openapi") == "3.0.3"
+              and tool_spec.get("info", {}).get("version") == spec.get("info", {}).get("version"),
+              tool_spec.get("info"))
 
         tool_issue = json.loads(by_name["issue_asset"].invoke(
             {"name": "TOOLCOIN", "qty": "50", "to_address": DEST}))

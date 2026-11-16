@@ -731,6 +731,30 @@ and logs the result in CHANGELOG.md.
   the spec and every spec path exists on the server, so the two can
   never drift. README links it as the contract agents should code
   against.
+  - [x] 2026-11-16 — v0.32.0 OpenAPI spec + drift test (slice 1, item
+    partial): new `src/openapi.ts` — the hand-maintained OpenAPI 3.0.3
+    document covering all 27 routes (every decision shape, the full
+    reason-code enum, per-route request/response shapes and error
+    statuses), served verbatim at `GET /v1/openapi.json`, which is
+    unauthenticated like `/v1/health` (the contract is public; the
+    auth-on test proves the exemption is specific — `/v1/metrics`
+    still 401s without a key). New `pnpm test:openapi`
+    (`demo/openapi-test.ts`): document-shape checks (version matches
+    package.json, every operation has a summary and responses, every
+    tag exists, every `$ref` resolves, every `{param}` is declared,
+    the reason-code enum covers every code the evaluator and the
+    server gates emit), the drift check (route registrations parsed
+    out of `src/server.ts` must equal the spec's method+path set in
+    both directions), and a booted-API integration (served document
+    is byte-identical to the module, every spec operation probed and
+    never answering Fastify's route-not-found 404). Adapters keep the
+    "cover every route" invariant: new `get_openapi` MCP tool and
+    LangChain client method + tool (22 tools now). `initialize` now
+    reports server version 0.32.0 (`src/mcp.ts`, `package.json`,
+    `langchain_rvn/pyproject.toml`); README route table gained the
+    openapi row (plus the previously missing sub-asset, unique-asset,
+    and Telegram webhook rows) and a new "OpenAPI contract" section.
+    Remainder: generated docs (an HTML docs page served from the spec).
 - [ ] **Hold-aging alerts** — a hold that sits unapproved is silent
   today. Add a configurable age threshold after which the server
   re-notifies the approvers (Telegram + a `intent.hold_aging` webhook

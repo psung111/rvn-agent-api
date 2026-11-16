@@ -23,6 +23,7 @@
  *   - get_anomaly_stats -> GET /v1/anomaly/:agentId
  *   - get_metrics      -> GET  /v1/metrics
  *   - archive_audit    -> POST /v1/audit/archive
+ *   - get_openapi      -> GET  /v1/openapi.json (the machine-readable contract)
  *
  * The MCP server is only a transport: the REST API stays the single
  * enforcement point — every tool call runs through the policy engine and the
@@ -354,6 +355,18 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'get_openapi',
+    description:
+      'Read the API\'s OpenAPI 3.0.3 contract (GET /v1/openapi.json): every route, decision ' +
+      'shape, reason code, and error status the API can return. Use it to code against the API ' +
+      'instead of guessing request shapes — the contract is asserted never to drift from the ' +
+      'server. Public: no API key needed, even with auth on. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'archive_audit',
     description:
       'Archive the audit entries older than a cutoff (POST /v1/audit/archive): export them to a JSON ' +
@@ -579,6 +592,10 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       const { status, body } = await api(`/v1/audit?limit=${encodeURIComponent(String(limit))}`);
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
+    case 'get_openapi': {
+      const { status, body } = await api('/v1/openapi.json');
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
     case 'archive_audit': {
       const { status, body } = await api('/v1/audit/archive', {
         method: 'POST',
@@ -622,7 +639,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.31.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.32.0' },
       });
     }
     case 'notifications/initialized':

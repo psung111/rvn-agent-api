@@ -331,6 +331,13 @@ class RvnApiClient:
         store backend."""
         return self._call("GET", "/v1/metrics")
 
+    def get_openapi(self) -> dict[str, Any]:
+        """Read the API's OpenAPI 3.0.3 contract: every route, decision
+        shape, reason code, and error status. Public — no key needed,
+        even with auth on. Use it to code against the API instead of
+        guessing request shapes."""
+        return self._call("GET", "/v1/openapi.json")
+
     # -- audit ------------------------------------------------------------
 
     def get_audit(self, limit: int = 50) -> dict[str, Any]:

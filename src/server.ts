@@ -50,6 +50,7 @@ import {
 } from './policy/index.js';
 import { storeFromEnv, type Store } from './store/index.js';
 import { computeMetrics } from './ops/metrics.js';
+import { openApiDocument } from './openapi.js';
 import { notifierFromEnv, telegramConfigFromEnv } from './approvals/notifier.js';
 import { webhookDispatcherFromEnv, type WebhookEvent } from './webhooks/dispatcher.js';
 import { parseCallbackData, formatResolvedMessage, type CallbackAction } from './approvals/callbacks.js';
@@ -192,8 +193,8 @@ async function main() {
 
   /**
    * The auth gate (v0.29.0; scopes added v0.31.0). Every /v1 route except
-   * /v1/health (liveness) and /v1/telegram/webhook (which has its own
-   * Telegram secret check) requires a Bearer key when auth is on: the
+   * /v1/health (liveness), /v1/openapi.json (the public contract) and
+   * /v1/telegram/webhook (which has its own Telegram secret check) requires a Bearer key when auth is on: the
    * env-seeded operator key, or a key issued through the admin surface
    * and stored hashed. A wrong or missing key gets 401 and the attempt
    * is audited as AUTH_FAILED (the key prefix only — never the key
@@ -206,7 +207,9 @@ async function main() {
    */
   app.addHook('onRequest', async (req, reply) => {
     const path = req.url.split('?')[0];
-    if (path === '/v1/health' || path === '/v1/telegram/webhook') {
+    // /v1/health (liveness) and /v1/openapi.json (the public contract)
+    // never need a key; /v1/telegram/webhook has its own secret check.
+    if (path === '/v1/health' || path === '/v1/openapi.json' || path === '/v1/telegram/webhook') {
       (req as any).auth = { agentId: OPERATOR_AGENT_ID, operator: true } as AuthIdentity;
       return;
     }
@@ -709,6 +712,14 @@ async function main() {
       ...(await node.getInfo()),
     };
   });
+
+  /**
+   * The OpenAPI contract (v0.32.0): the hand-maintained document in
+   * src/openapi.ts, served verbatim. Unauthenticated like /v1/health —
+   * it is the public contract agents code against. `pnpm test:openapi`
+   * asserts the served document never drifts from the registered routes.
+   */
+  app.get('/v1/openapi.json', async () => openApiDocument);
 
   /**
    * Ops metrics (read-only, v0.26.0): decision counts by kind and reason

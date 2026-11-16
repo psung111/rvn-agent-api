@@ -49,9 +49,12 @@ verifies clean.
 | Method | Path | What |
 |---|---|---|
 | GET | `/v1/health` | node info (mock or real) |
+| GET | `/v1/openapi.json` | this OpenAPI contract (public — no key needed, even with auth on) |
 | POST | `/v1/wallets` | provision an agent wallet address |
 | POST | `/v1/assets/issue` | issue a new asset (policy-gated) |
 | POST | `/v1/assets/reissue` | reissue more supply of an existing reissuable asset (policy-gated like an issue; optional `reissuable`, `newUnits` 0–8, `newIpfsHash` — `newUnits` required when `newIpfsHash` is set) |
+| POST | `/v1/assets/issue-subasset` | issue a sub-asset under an existing parent (policy-gated like an issue; name must contain `/`) |
+| POST | `/v1/assets/issue-unique` | issue a unique asset, `ROOT#TAG` (policy-gated like an issue; singleton — qty fixed at 1) |
 | POST | `/v1/assets/transfer` | transfer an asset (policy-gated) |
 | GET | `/v1/assets?pattern=` | list assets |
 | GET | `/v1/assets/:name` | asset details |
@@ -59,6 +62,7 @@ verifies clean.
 | POST | `/v1/intents/:id/approve` | approve a held intent (body: optional `approver` label; a quorum hold returns 202 with `approvalsReceived`/`approvalsRequired` until N distinct approvers have approved, then executes; when the hold carries a roster (`quorumApprovers`, M identities) only roster members count — anyone else gets 403) |
 | POST | `/v1/intents/:id/deny` | deny a held intent (any single approver ends the hold) |
 | GET | `/v1/intents/pending` | intents awaiting approval |
+| POST | `/v1/telegram/webhook` | Telegram Approve/Deny button callbacks (its own secret check, no API key) |
 | GET | `/v1/audit` | hash-chained audit trail (`chainValid`) |
 | POST | `/v1/audit/archive` | archive entries older than `beforeMs` (epoch ms; omitted = retention policy, `RVN_AUDIT_RETENTION_DAYS`, default 90 days) to a JSON file with a chain-verification proof, then prune them from the live chain (newest entry always kept as the anchor) |
 | GET | `/v1/policies/:agentId` | fetch an agent's policy |
@@ -77,6 +81,18 @@ Policy defaults (`src/policy/presets.ts`): per-issue cap 100k units, approval ab
 asset names must match Ravencoin's `^[A-Z0-9._]{3,30}$`. Tune to taste — that's the
 whole product.
 
+## OpenAPI contract
+
+The machine-readable contract for the API above lives at
+`GET /v1/openapi.json` (OpenAPI 3.0.3, hand-maintained in `src/openapi.ts`) —
+every route, decision shape, reason code, and error status. Code against it
+instead of guessing request shapes. `pnpm test:openapi` asserts it never
+drifts from the server: it parses the route registrations out of
+`src/server.ts` and requires the spec's method+path set to match exactly,
+and probes every spec operation against a booted API. The MCP server
+(`get_openapi` tool) and the LangChain client (`get_openapi()`) expose the
+same document, so agents can fetch the contract through either adapter.
+
 ## API-key authentication
 
 The REST surface is unauthenticated by default (the localhost demo posture).
@@ -86,7 +102,8 @@ Turn auth on with `RVN_AUTH_ENABLED=true`, or by setting an operator key:
 RVN_OPERATOR_API_KEY=rvn_your-long-operator-key-here pnpm dev
 ```
 
-With auth on, every `/v1` route except `/v1/health` (liveness) and
+With auth on, every `/v1` route except `/v1/health` (liveness),
+`/v1/openapi.json` (the public contract), and
 `/v1/telegram/webhook` (its own secret check) requires
 `Authorization: Bearer <key>`. Keys are issued per agentId through the
 admin surface above — only the operator key may use it — and stored as
