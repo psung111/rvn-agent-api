@@ -105,6 +105,30 @@ class RvnApiClient:
             raise RvnApiError(err.code, str(detail)) from err
         return _parse(payload)
 
+    def _call_text(
+        self,
+        method: str,
+        path: str,
+    ) -> str:
+        """Like :meth:`_call`, but for the one route that returns HTML
+        (GET /v1/docs): returns the raw response body as text. A non-2xx
+        status still raises :class:`RvnApiError`."""
+        url = self.base_url + path
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
+        req = urllib.request.Request(url, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.read().decode("utf-8")
+        except urllib.error.HTTPError as err:
+            payload = err.read().decode("utf-8")
+            try:
+                detail = _parse(payload).get("error", payload)
+            except ValueError:
+                detail = payload or err.reason
+            raise RvnApiError(err.code, str(detail)) from err
+
     # -- health / wallets ----------------------------------------------
 
     def health(self) -> dict[str, Any]:
@@ -337,6 +361,14 @@ class RvnApiClient:
         even with auth on. Use it to code against the API instead of
         guessing request shapes."""
         return self._call("GET", "/v1/openapi.json")
+
+    def get_docs(self) -> str:
+        """Read the API docs as a human-readable HTML page: every route
+        grouped by tag with its parameters, request body and responses,
+        plus the decision model and the full reason-code list — the same
+        contract as :meth:`get_openapi`, rendered for reading instead of
+        parsing. Public — no key needed, even with auth on."""
+        return self._call_text("GET", "/v1/docs")
 
     # -- audit ------------------------------------------------------------
 

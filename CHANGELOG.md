@@ -1,5 +1,71 @@
 # Changelog
 
+## 2026-11-17 — v0.33.0 (Generated docs page, slice 2 — item complete)
+
+- OpenAPI spec, slice 2: the contract now renders as a human-readable HTML
+  docs page, completing the item. New `src/docs.ts` — pure
+  `renderDocsHtml(openApiDocument)`, no dependencies: a single
+  self-contained HTML page (inline CSS, no external assets, no
+  JavaScript) with the title/version, a link to `/v1/openapi.json`, a
+  decision-model section (ALLOW / REQUIRE_APPROVAL / DENY plus the full
+  reason-code list from the Decision schema), and every operation grouped
+  by tag with its method badge, path, summary, description, parameters
+  table, request-body schema, and responses. Schemas render readably:
+  `$ref`s inline one level deep (deeper or cyclic refs render by name),
+  objects as property lists with required flags, arrays as "array of …",
+  enums as their values. Everything from the document is HTML-escaped, so
+  a description carrying markup renders as text, never as markup.
+- New `GET /v1/docs` (in the spec, so the drift check covers it):
+  regenerates the page from the spec on every request, so it can never
+  drift from the contract the way a separately maintained docs page
+  would; unauthenticated like `/v1/openapi.json` — the docs are the same
+  public contract, rendered for reading — and the auth exemption is
+  specific (the auth-on test proves `/v1/metrics` still 401s without a
+  key). Served as `text/html; charset=utf-8`.
+- Adapters keep the "cover every route" invariant: new `get_docs` MCP
+  tool (a new `apiText()` fetch path, since the route returns HTML rather
+  than JSON) and a LangChain client method + tool (`langchain_rvn` now
+  builds 23 tools; the client gained a `_call_text()` transport for the
+  HTML route). `initialize` now reports server version 0.33.0
+  (`src/mcp.ts`, `package.json`, `langchain_rvn/pyproject.toml`); README
+  route table gained the docs row and the OpenAPI contract section now
+  names the page, and the auth section names the docs exemption.
+- New `pnpm test:docs` (`demo/docs-test.ts`, 15 checks): render units on
+  the real spec (title/version, contract link, no external assets, every
+  one of the 28 spec operations, all 14 reason codes, the Decision schema
+  properties, the decision-model section), hostile-document escaping
+  (`<script>` in a description renders as `&lt;script&gt;`, an unknown
+  `$ref` renders its name instead of crashing), a minimal doc rendering,
+  and a booted-API integration (200 text/html, served page byte-identical
+  to the rendered spec, every spec path present, auth-on exemption
+  specific). `demo/mcp-smoke.ts` gained a `get_docs` section (5th check
+  family: tools/list exposes it, the call returns the HTML at the package
+  version with every spec path and the decision model) and its
+  `get_openapi` section now asserts `/v1/docs` is in the spec;
+  `pnpm test:langchain` updated (23 tools, client + tool docs shape).
+  `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:docs` script. No local
+  Postgres on this VM, so the Postgres live legs were skipped (as in
+  recent sessions). One harness quirk caught while verifying: a
+  verification loop whose `ls` glob matched nothing fed an empty
+  argument to `tsx`, which sat at a REPL waiting on stdin — the suites
+  were re-run individually with `timeout` guards instead; no product
+  code was at fault.
+- The OpenAPI spec item is complete; the next top item is hold-aging
+  alerts.
+
 ## 2026-11-16 — v0.32.0 (OpenAPI spec + drift test, slice 1 — item partial)
 
 - OpenAPI spec, slice 1: the API's machine-readable contract is now

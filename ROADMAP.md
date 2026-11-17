@@ -723,7 +723,7 @@ and logs the result in CHANGELOG.md.
     migrations, partition, webhooks, ratelimit, metrics, quorum,
     auth, langchain suites still green. The API-key authentication
     item is complete; the next top item is the OpenAPI spec.
-- [ ] **OpenAPI spec + generated docs** — the API has grown to ~20
+- [x] **OpenAPI spec + generated docs** — the API has grown to ~20
   routes with no machine-readable contract. Add a hand-maintained
   `openapi.yaml` (or generate it from the route table) covering every
   route, decision shape, reason code, and error status, served at
@@ -755,6 +755,40 @@ and logs the result in CHANGELOG.md.
     openapi row (plus the previously missing sub-asset, unique-asset,
     and Telegram webhook rows) and a new "OpenAPI contract" section.
     Remainder: generated docs (an HTML docs page served from the spec).
+  - [x] 2026-11-17 — v0.33.0 generated docs (slice 2, item complete):
+    new `src/docs.ts` — pure `renderDocsHtml(openApiDocument)` with no
+    dependencies: a single self-contained HTML page (inline CSS, no
+    external assets, no JavaScript) with the title/version, a link to
+    `/v1/openapi.json`, a decision-model section (ALLOW /
+    REQUIRE_APPROVAL / DENY plus the full reason-code list from the
+    Decision schema), and every operation grouped by tag with its
+    method badge, path, summary, description, parameters table,
+    request-body schema, and responses. Schemas render readably: `$ref`s
+    inline one level deep (deeper or cyclic refs render by name),
+    objects as property lists with required flags, arrays as "array of
+    …", enums as their values; everything from the document is
+    HTML-escaped. New `GET /v1/docs` (in the spec, so the drift check
+    covers it): regenerates the page from the spec on every request, so
+    it can never drift from the contract; unauthenticated like
+    `/v1/openapi.json` and the auth exemption is specific (`/v1/metrics`
+    still 401s without a key on an auth-on API). Adapters keep the
+    "cover every route" invariant: new `get_docs` MCP tool (a new
+    `apiText()` fetch path, since the route returns HTML) and a
+    LangChain client method + tool (23 tools now; the client gained a
+    `_call_text()` transport). Verified with new `pnpm test:docs`
+    (`demo/docs-test.ts`, 15 checks: render units on the real spec —
+    every one of the 28 operations, all 14 reason codes, Decision
+    schema properties — hostile-document escaping, an unknown `$ref`
+    rendering its name, a minimal doc, and a booted-API integration
+    proving the served page is byte-identical to the rendered spec and
+    the auth-on exemption is specific), a new `get_docs` section in
+    `pnpm mcp-smoke`, and `pnpm test:langchain` (23 tools, client +
+    tool docs shape); demo, mcp-smoke, approvals,
+    telegram-callback, simulate, reissue, subasset, unique, presets,
+    anomaly, store, archive, migrations, partition, webhooks,
+    ratelimit, metrics, quorum, auth, mcp-auth, openapi, langchain
+    suites still green. The OpenAPI spec + generated docs item is
+    complete; the next top item is hold-aging alerts.
 - [ ] **Hold-aging alerts** — a hold that sits unapproved is silent
   today. Add a configurable age threshold after which the server
   re-notifies the approvers (Telegram + a `intent.hold_aging` webhook

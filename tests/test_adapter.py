@@ -151,13 +151,13 @@ def main():
         # --- LangChain tools ---
         tools = get_tools(client)
         by_name = {t.name: t for t in tools}
-        check("22 tools built", len(tools) == 22, sorted(by_name))
+        check("23 tools built", len(tools) == 23, sorted(by_name))
         check("tool names cover every route",
               {"issue_asset", "reissue_asset", "issue_subasset", "issue_unique",
                "transfer_asset", "list_assets", "get_asset", "simulate_intent",
                "approve_intent", "deny_intent", "pending_intents", "get_policy",
                "set_policy", "list_presets", "apply_preset", "get_ratelimit",
-               "get_anomaly_stats", "get_metrics", "get_openapi", "get_audit",
+               "get_anomaly_stats", "get_metrics", "get_openapi", "get_docs", "get_audit",
                "archive_audit", "create_wallet"} == set(by_name))
         stats = client.get_ratelimit()
         check("client get_ratelimit: unlimited agent reports limited:false",
@@ -200,6 +200,19 @@ def main():
               tool_spec.get("openapi") == "3.0.3"
               and tool_spec.get("info", {}).get("version") == spec.get("info", {}).get("version"),
               tool_spec.get("info"))
+        docs = client.get_docs()
+        check("client get_docs: HTML docs page at the package version",
+              docs.startswith("<!DOCTYPE html>")
+              and f"rvn-agent-api {spec.get('info', {}).get('version')} — API docs" in docs
+              and "/v1/assets/issue" in docs
+              and "/v1/docs" in docs
+              and "<h2>Decision model</h2>" in docs,
+              docs[:200])
+        tool_docs = by_name["get_docs"].invoke({})
+        check("tool get_docs returns the same docs page",
+              tool_docs.startswith("<!DOCTYPE html>")
+              and "/v1/openapi.json" in tool_docs,
+              tool_docs[:200])
 
         tool_issue = json.loads(by_name["issue_asset"].invoke(
             {"name": "TOOLCOIN", "qty": "50", "to_address": DEST}))

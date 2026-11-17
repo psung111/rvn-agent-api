@@ -24,6 +24,7 @@
  *   - get_metrics      -> GET  /v1/metrics
  *   - archive_audit    -> POST /v1/audit/archive
  *   - get_openapi      -> GET  /v1/openapi.json (the machine-readable contract)
+ *   - get_docs         -> GET  /v1/docs (the human-readable docs page, HTML)
  *
  * The MCP server is only a transport: the REST API stays the single
  * enforcement point — every tool call runs through the policy engine and the
@@ -367,6 +368,19 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'get_docs',
+    description:
+      'Read the API docs as a human-readable HTML page (GET /v1/docs): every route grouped by tag ' +
+      'with its parameters, request body and responses, plus the decision model and the full ' +
+      'reason-code list — the same contract as get_openapi, rendered for reading instead of parsing. ' +
+      'Generated from the spec on every request, so it never drifts. Public: no API key needed, even ' +
+      'with auth on. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'archive_audit',
     description:
       'Archive the audit entries older than a cutoff (POST /v1/audit/archive): export them to a JSON ' +
@@ -412,6 +426,16 @@ async function api(path: string, init?: RequestInit): Promise<{ status: number; 
     body = { error: `non-JSON response (${res.status})` };
   }
   return { status: res.status, body };
+}
+
+/** Like `api()`, but for the one route that returns HTML (GET /v1/docs). */
+async function apiText(path: string): Promise<{ status: number; text: string }> {
+  const res = await fetch(`${API}${path}`, {
+    headers: {
+      ...(API_KEY ? { authorization: `Bearer ${API_KEY}` } : {}),
+    },
+  });
+  return { status: res.status, text: await res.text() };
 }
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -596,6 +620,10 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       const { status, body } = await api('/v1/openapi.json');
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
+    case 'get_docs': {
+      const { status, text } = await apiText('/v1/docs');
+      return textResult({ httpStatus: status, html: text }, status >= 400);
+    }
     case 'archive_audit': {
       const { status, body } = await api('/v1/audit/archive', {
         method: 'POST',
@@ -639,7 +667,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.32.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.33.0' },
       });
     }
     case 'notifications/initialized':

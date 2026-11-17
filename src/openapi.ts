@@ -1,5 +1,5 @@
 /**
- * OpenAPI 3.0.3 contract for rvn-agent-api (v0.32.0).
+ * OpenAPI 3.0.3 contract for rvn-agent-api (v0.33.0).
  *
  * Hand-maintained, served verbatim at GET /v1/openapi.json, and kept in
  * lockstep with the server by `pnpm test:openapi`: the test parses the
@@ -42,7 +42,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.32.0',
+    version: '0.33.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -93,6 +93,23 @@ export const openApiDocument = {
           '200': {
             description: 'The OpenAPI 3.0.3 document.',
             content: { 'application/json': { schema: { type: 'object' } } },
+          },
+        },
+      },
+    },
+    '/v1/docs': {
+      get: {
+        tags: ['Health'],
+        summary: 'Human-readable API docs',
+        description:
+          'Unauthenticated. A single self-contained HTML page generated from this contract on every ' +
+          'request — every route grouped by tag with its parameters, request body and responses, plus ' +
+          'the decision model and the full reason-code list. No external assets, no JavaScript.',
+        security: [],
+        responses: {
+          '200': {
+            description: 'The docs page as HTML.',
+            content: { 'text/html': { schema: { type: 'string' } } },
           },
         },
       },

@@ -51,6 +51,7 @@ import {
 import { storeFromEnv, type Store } from './store/index.js';
 import { computeMetrics } from './ops/metrics.js';
 import { openApiDocument } from './openapi.js';
+import { renderDocsHtml } from './docs.js';
 import { notifierFromEnv, telegramConfigFromEnv } from './approvals/notifier.js';
 import { webhookDispatcherFromEnv, type WebhookEvent } from './webhooks/dispatcher.js';
 import { parseCallbackData, formatResolvedMessage, type CallbackAction } from './approvals/callbacks.js';
@@ -193,7 +194,8 @@ async function main() {
 
   /**
    * The auth gate (v0.29.0; scopes added v0.31.0). Every /v1 route except
-   * /v1/health (liveness), /v1/openapi.json (the public contract) and
+   * /v1/health (liveness), /v1/openapi.json (the public contract),
+   * /v1/docs (the human-readable rendering of that contract) and
    * /v1/telegram/webhook (which has its own Telegram secret check) requires a Bearer key when auth is on: the
    * env-seeded operator key, or a key issued through the admin surface
    * and stored hashed. A wrong or missing key gets 401 and the attempt
@@ -207,9 +209,10 @@ async function main() {
    */
   app.addHook('onRequest', async (req, reply) => {
     const path = req.url.split('?')[0];
-    // /v1/health (liveness) and /v1/openapi.json (the public contract)
-    // never need a key; /v1/telegram/webhook has its own secret check.
-    if (path === '/v1/health' || path === '/v1/openapi.json' || path === '/v1/telegram/webhook') {
+    // /v1/health (liveness), /v1/openapi.json (the public contract) and
+    // /v1/docs (its human-readable rendering) never need a key;
+    // /v1/telegram/webhook has its own secret check.
+    if (path === '/v1/health' || path === '/v1/openapi.json' || path === '/v1/docs' || path === '/v1/telegram/webhook') {
       (req as any).auth = { agentId: OPERATOR_AGENT_ID, operator: true } as AuthIdentity;
       return;
     }
@@ -720,6 +723,18 @@ async function main() {
    * asserts the served document never drifts from the registered routes.
    */
   app.get('/v1/openapi.json', async () => openApiDocument);
+
+  /**
+   * Human-readable API docs (v0.33.0): the contract rendered as a single
+   * self-contained HTML page by `renderDocsHtml` in src/docs.ts — no
+   * external assets, no JavaScript. Generated from the spec on every
+   * request, so it can never drift from the contract; unauthenticated
+   * like /v1/openapi.json for the same reason. `pnpm test:docs` asserts
+   * the page lists every spec operation.
+   */
+  app.get('/v1/docs', async (_req, reply) => {
+    return reply.type('text/html; charset=utf-8').send(renderDocsHtml(openApiDocument));
+  });
 
   /**
    * Ops metrics (read-only, v0.26.0): decision counts by kind and reason

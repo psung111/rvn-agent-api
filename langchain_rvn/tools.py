@@ -295,6 +295,18 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
+    def get_docs() -> str:
+        """Read the API docs as a human-readable HTML page: every route
+        grouped by tag with its parameters, request body and responses,
+        plus the decision model and the full reason-code list — the same
+        contract as get_openapi, rendered for reading instead of parsing.
+        Public, no key needed even with auth on. Read-only."""
+        try:
+            return client.get_docs()
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
     def get_audit(limit: int = 50) -> str:
         """Read the tail of the hash-chained audit log with its chain
         validity flag. Use it to verify what actually happened."""
@@ -344,6 +356,7 @@ def build_tools(client: RvnApiClient) -> list:
         get_anomaly_stats,
         get_metrics,
         get_openapi,
+        get_docs,
         get_audit,
         archive_audit,
         create_wallet,

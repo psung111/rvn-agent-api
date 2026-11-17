@@ -40,7 +40,8 @@
     "test:auth": "tsx demo/auth-test.ts",
     "test:mcp-auth": "tsx demo/mcp-auth-test.ts",
     "test:langchain": "python3 tests/test_adapter.py",
-    "test:openapi": "tsx demo/openapi-test.ts"
+    "test:openapi": "tsx demo/openapi-test.ts",
+    "test:docs": "tsx demo/docs-test.ts"
   },
-  "version": "0.32.0"
+  "version": "0.33.0"
 }

@@ -29,6 +29,8 @@
  *       approval is a 403 with 0/2 of 3, roster members execute 2/2 of 3)
  *   24. get_openapi via MCP (the contract: OpenAPI 3.0.3, version matches,
  *       every route present, Decision schema carries the reason codes)
+ *   25. get_docs via MCP (the docs page: HTML at the package version, every
+ *       spec path, the decision model)
  *
  * Usage: pnpm mcp-smoke   (API must be running, default http://localhost:3001)
  */
@@ -114,7 +116,7 @@ async function main(): Promise<void> {
   // 2. tools/list
   const list = await send('tools/list');
   const names: string[] = (list.result?.tools ?? []).map((t: any) => t.name);
-  for (const want of ['issue_asset', 'transfer_asset', 'list_assets', 'get_audit', 'archive_audit', 'get_openapi']) {
+  for (const want of ['issue_asset', 'transfer_asset', 'list_assets', 'get_audit', 'archive_audit', 'get_openapi', 'get_docs']) {
     check(`tools/list includes ${want}`, names.includes(want), names);
   }
 
@@ -464,11 +466,21 @@ async function main(): Promise<void> {
   // Decision schema carries the full reason-code enum.
   const spec = await toolCall('get_openapi', {});
   check('get_openapi via MCP returns the OpenAPI 3.0.3 contract at the package version',
-    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.32.0' &&
+    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.33.0' &&
     typeof spec.body.paths === 'object' && '/v1/assets/issue' in spec.body.paths &&
-    '/v1/openapi.json' in spec.body.paths &&
+    '/v1/openapi.json' in spec.body.paths && '/v1/docs' in spec.body.paths &&
     Array.isArray(spec.body.components?.schemas?.Decision?.properties?.reasonCodes?.items?.enum) &&
     spec.body.components.schemas.Decision.properties.reasonCodes.items.enum.includes('RATE_LIMIT_EXCEEDED'), spec.body);
+
+  // 25. get_docs via MCP (v0.33.0) — the human-readable docs page: HTML
+  // carrying the package version, every spec path, and the decision model.
+  const docs = await toolCall('get_docs', {});
+  check('get_docs via MCP returns the docs HTML at the package version',
+    docs.ok && docs.body.httpStatus === 200 && typeof docs.body.html === 'string' &&
+    docs.body.html.includes(`<title>rvn-agent-api 0.33.0 — API docs</title>`) &&
+    docs.body.html.includes('/v1/assets/issue') && docs.body.html.includes('/v1/docs') &&
+    docs.body.html.includes('<h2>Decision model</h2>') &&
+    docs.body.html.includes('<code>RATE_LIMIT_EXCEEDED</code>'), docs.body.html?.slice(0, 200));
 
   child.kill();
   shuttingDown = true;

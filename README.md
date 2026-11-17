@@ -50,6 +50,7 @@ verifies clean.
 |---|---|---|
 | GET | `/v1/health` | node info (mock or real) |
 | GET | `/v1/openapi.json` | this OpenAPI contract (public — no key needed, even with auth on) |
+| GET | `/v1/docs` | the same contract as a human-readable HTML page (public — no key needed, even with auth on) |
 | POST | `/v1/wallets` | provision an agent wallet address |
 | POST | `/v1/assets/issue` | issue a new asset (policy-gated) |
 | POST | `/v1/assets/reissue` | reissue more supply of an existing reissuable asset (policy-gated like an issue; optional `reissuable`, `newUnits` 0–8, `newIpfsHash` — `newUnits` required when `newIpfsHash` is set) |
@@ -86,11 +87,16 @@ whole product.
 The machine-readable contract for the API above lives at
 `GET /v1/openapi.json` (OpenAPI 3.0.3, hand-maintained in `src/openapi.ts`) —
 every route, decision shape, reason code, and error status. Code against it
-instead of guessing request shapes. `pnpm test:openapi` asserts it never
+instead of guessing request shapes. The same contract is served as a
+human-readable HTML page at `GET /v1/docs` (generated from the spec on every
+request by `src/docs.ts` — no external assets, no JavaScript — so it can
+never drift from it). `pnpm test:openapi` asserts it never
 drifts from the server: it parses the route registrations out of
 `src/server.ts` and requires the spec's method+path set to match exactly,
-and probes every spec operation against a booted API. The MCP server
-(`get_openapi` tool) and the LangChain client (`get_openapi()`) expose the
+and probes every spec operation against a booted API. `pnpm test:docs`
+asserts the docs page lists every spec operation. The MCP server
+(`get_openapi` and `get_docs` tools) and the LangChain client
+(`get_openapi()` and `get_docs()`) expose the
 same document, so agents can fetch the contract through either adapter.
 
 ## API-key authentication
@@ -103,7 +109,8 @@ RVN_OPERATOR_API_KEY=rvn_your-long-operator-key-here pnpm dev
 ```
 
 With auth on, every `/v1` route except `/v1/health` (liveness),
-`/v1/openapi.json` (the public contract), and
+`/v1/openapi.json` (the public contract), `/v1/docs` (its human-readable
+rendering), and
 `/v1/telegram/webhook` (its own secret check) requires
 `Authorization: Bearer <key>`. Keys are issued per agentId through the
 admin surface above — only the operator key may use it — and stored as
