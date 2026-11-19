@@ -1,5 +1,87 @@
 # Changelog
 
+## 2026-11-18 — v0.34.0 (Hold-aging alerts, item complete)
+
+- Hold-aging alerts: a hold that sits unapproved is silent no more. New
+  `src/approvals/hold-aging.ts` — `holdAgingConfigFromEnv()` (lenient:
+  `RVN_HOLD_ALERT_AFTER_MS`, default 3600000 = 1h, range 1000..7d;
+  `RVN_HOLD_ALERT_CHECK_MS`, default 60000, range 1000..1h; invalid
+  values fall back to the defaults, never a startup crash),
+  `formatAgeMs()` ("45s" / "5m" / "1h 5m" / "2d 3h"),
+  `quorumProgressOf()` / `holdAgingInfoOf()` (the n/N of M progress for
+  the payload), `isHoldAgingDue()`, and the `checkHoldAging()` sweep
+  worker. Once a pending hold is older than the threshold the sweep
+  re-notifies the approvers exactly once per hold: a Telegram reminder
+  (`notifyAging` on the notifier interface — `formatHoldAgingMessage`
+  carries the hold's age and quorum progress, with the same
+  Approve/Deny buttons so the approver can act from the reminder) plus
+  a new `intent.hold_aging` webhook event (the fifth event type;
+  `holdAging: { ageMs, quorum? }` on the payload, subscribable per
+  endpoint like the other four). The alert is audited as
+  `HOLD_AGING_ALERT` (new audit kind, with ageMs, notified, and the
+  quorum counts).
+- The "once" is a persisted `Decision.holdAlertedAtMs` flag — both
+  stores JSON-serialize decisions, so no migration was needed — and the
+  sweep runs on an `unref`'d interval inside the server plus once at
+  boot, so a restart re-alerts holds that aged while the server was
+  down but never double-fires one that already alerted. A channel
+  failure never blocks the other channel, the audit, or the flag; a
+  hold whose flag could not be persisted is not counted as alerted, so
+  the next sweep retries it instead of silently dropping the alert.
+  Approving or denying a hold clears the alert inherently: the decision
+  leaves REQUIRE_APPROVAL, so it is no longer pending and the sweep
+  never sees it again. `/v1/health` reports `holdAging` (threshold,
+  interval, whether any channel is configured). No new route or tool:
+  the adapters keep the "cover every route" invariant unchanged.
+- New `pnpm test:hold-aging` (`demo/hold-aging-test.ts`, 71 checks):
+  config parsing (defaults, valid, non-numeric / below-min / above-max /
+  fractional fallbacks, max values), age formatting, due/once-per-hold
+  logic (young, old, exactly-at-threshold, already-alerted, ALLOW/DENY
+  never due), quorum progress (no quorum, with/without roster, payload
+  shape), the aging message (age, quorum line, approve curl), sweep
+  worker units (young silent, old alerts once with notify + webhook +
+  audit + mark, second sweep silent, quorum counts in webhook and
+  audit, notifier failure still webhooks/audits/marks, webhook failure
+  still notifies/audits/marks, mark failure not counted and retried),
+  and a booted-API integration (health reports the config; a transfer
+  hold alerts after 1.5s with one Telegram reminder and one
+  `intent.hold_aging` event carrying age >= threshold; the
+  `HOLD_AGING_ALERT` audit entry lands; the hold stays pending; no
+  second alert on later sweeps; approving clears it; a quorum hold's
+  payload and reminder report 0/2, and denying it clears it too).
+  `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`, `pnpm test:langchain`
+  still green. `initialize` now reports server version 0.34.0
+  (`src/mcp.ts`, `package.json`, `langchain_rvn/pyproject.toml`);
+  README gained the hold-aging section and the webhook event list now
+  names `intent.hold_aging`.
+- Two version stragglers caught by the drift checks and fixed in the
+  same session: `src/openapi.ts` `info.version` still said 0.33.0
+  (the openapi/docs tests compare it against package.json), and the
+  mcp-auth / mcp-smoke version expectations updated to 0.34.0.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:hold-aging` script. No
+  local Postgres on this VM, so the Postgres live legs were skipped (as
+  in recent sessions); the decision flag needs no migration since both
+  stores serialize decisions as JSON. Two test-harness issues fixed
+  while verifying (no product code at fault): the mcp-smoke suite
+  needs a live API on port 3001 first (its first check is "API is
+  running"), and the hold-aging integration initially used a 400ms
+  sweep interval below the enforced 1000ms minimum and the transfer
+  route's `destination` field (not the `toAddress` alias).
+- The hold-aging alerts item is complete; the next top item is policy
+  history + rollback.
+
 ## 2026-11-17 — v0.33.0 (Generated docs page, slice 2 — item complete)
 
 - OpenAPI spec, slice 2: the contract now renders as a human-readable HTML

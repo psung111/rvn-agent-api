@@ -226,19 +226,38 @@ Approve/Deny buttons: taps arrive as callback queries on
 `POST /v1/telegram/webhook` and resolve the intent the same way the HTTP
 routes do.
 
+## Hold-aging alerts
+
+A hold that sits unapproved is silent by default — no one is re-pinged.
+Set `RVN_HOLD_ALERT_AFTER_MS` (default 3600000 = 1h) and the server
+re-notifies the approvers once per hold after it has sat that long: a
+Telegram reminder (same Approve/Deny buttons, plus the hold's age and
+the quorum progress, e.g. `approvals: 1/2 of 3`) and an
+`intent.hold_aging` webhook event carrying `{ ageMs, quorum? }`.
+The alert is audited as `HOLD_AGING_ALERT`, and approving or denying
+the hold clears it — a resolved hold never alerts. The sweep runs
+inside the server every `RVN_HOLD_ALERT_CHECK_MS` (default 60000) and
+once at boot, so a restart re-alerts holds that aged while the server
+was down; the "once" is a flag persisted on the decision itself, so a
+restart cannot lose it or double-fire it. `/v1/health` reports
+`holdAging` (threshold, interval, whether any channel is configured).
+Verify with `pnpm test:hold-aging`.
+
 ## Webhooks
 
 Set `RVN_WEBHOOK_URL` and the API POSTs decision/execution events to it
 as JSON: `intent.decided` (every ALLOW / REQUIRE_APPROVAL / DENY),
-`intent.executed` (with txid), `intent.denied`, and
-`intent.execution_failed` (with the error). Set `RVN_WEBHOOK_SECRET` as
-well and every delivery carries `X-Rvn-Signature: sha256=<hex>`
-(HMAC-SHA256 over the raw body) plus `X-Rvn-Event`, so a receiver can
-prove the event came from this API. Delivery failures are audited as
-`WEBHOOK_DELIVERY_FAILED` and never fail the request that produced the
-event; unset the URL and webhooks stay disabled. `/v1/health` reports
-`webhooks.configured`. Verify with `pnpm test:webhooks`, which drives
-the real API against a stub receiver.
+`intent.executed` (with txid), `intent.denied`,
+`intent.execution_failed` (with the error), and `intent.hold_aging`
+(once per hold that sits unapproved past the threshold — see
+Hold-aging alerts; carries the hold's age and quorum progress). Set
+`RVN_WEBHOOK_SECRET` as well and every delivery carries
+`X-Rvn-Signature: sha256=<hex>` (HMAC-SHA256 over the raw body) plus
+`X-Rvn-Event`, so a receiver can prove the event came from this API.
+Delivery failures are audited as `WEBHOOK_DELIVERY_FAILED` and never
+fail the request that produced the event; unset the URL and webhooks
+stay disabled. `/v1/health` reports `webhooks.configured`. Verify with
+`pnpm test:webhooks`, which drives the real API against a stub receiver.
 
 ## Going live (testnet)
 

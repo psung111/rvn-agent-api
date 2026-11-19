@@ -53,6 +53,11 @@ import { computeMetrics } from './ops/metrics.js';
 import { openApiDocument } from './openapi.js';
 import { renderDocsHtml } from './docs.js';
 import { notifierFromEnv, telegramConfigFromEnv } from './approvals/notifier.js';
+import {
+  checkHoldAging,
+  holdAgingConfigFromEnv,
+  type HoldAgingInfo,
+} from './approvals/hold-aging.js';
 import { webhookDispatcherFromEnv, type WebhookEvent } from './webhooks/dispatcher.js';
 import { parseCallbackData, formatResolvedMessage, type CallbackAction } from './approvals/callbacks.js';
 import { TelegramApi } from './approvals/telegram-api.js';
@@ -71,6 +76,10 @@ const webhookDispatcher = webhookDispatcherFromEnv();
 // Audit retention (v0.24.0): entries older than retentionDays are archived
 // to JSON files with a chain-verification proof by POST /v1/audit/archive.
 const retention = retentionConfigFromEnv();
+// Hold-aging alerts (v0.34.0): a hold sitting unapproved past
+// alertAfterMs gets one Telegram reminder + one intent.hold_aging webhook
+// event, audited as HOLD_AGING_ALERT; the sweep runs on an interval.
+const holdAging = holdAgingConfigFromEnv();
 const telegramConfig = telegramConfigFromEnv();
 const telegramApi = telegramConfig ? new TelegramApi(telegramConfig.botToken) : null;
 // API-key auth (v0.29.0): off by default (the localhost demo posture);
@@ -129,6 +138,12 @@ async function main() {
   );
   app.log.info(
     `audit retention: ${retention.retentionDays} days, archives to ${retention.archiveDir}`,
+  );
+  app.log.info(
+    `hold-aging alerts: alert after ${holdAging.alertAfterMs}ms, check every ${holdAging.checkIntervalMs}ms` +
+      (approvalNotifier.enabled || webhookDispatcher.enabled
+        ? ''
+        : ' (no Telegram notifier or webhook configured — alerts audit only)'),
   );
   app.log.info(
     auth.enabled
@@ -355,7 +370,7 @@ async function main() {
   const deliverWebhook = async (
     event: WebhookEvent,
     intent: RvnIntent,
-    extra: { decision?: Decision; txid?: string; error?: string } = {},
+    extra: { decision?: Decision; txid?: string; error?: string; holdAging?: HoldAgingInfo } = {},
   ): Promise<void> => {
     if (!webhookDispatcher.enabled) return;
     const { delivered, failed } = await webhookDispatcher.deliverDetailed(event, intent, extra);
@@ -706,6 +721,13 @@ async function main() {
         telegramConfigured: approvalNotifier.name === 'telegram',
         telegramWebhookSecretConfigured: WEBHOOK_SECRET !== undefined,
         perAgentChatRoutes: telegramConfig ? Object.keys(telegramConfig.chatIdsByAgent).length : 0,
+      },
+      holdAging: {
+        alertAfterMs: holdAging.alertAfterMs,
+        checkIntervalMs: holdAging.checkIntervalMs,
+        // An alert is useful when at least one channel can carry it;
+        // with neither configured the sweep still audits HOLD_AGING_ALERT.
+        enabled: approvalNotifier.enabled || webhookDispatcher.enabled,
       },
       webhooks: {
         configured: webhookDispatcher.enabled,
@@ -1482,6 +1504,40 @@ async function main() {
     });
     return { record: publicApiKey({ ...record, revokedAtMs }) };
   });
+
+  /**
+   * Hold-aging sweep (v0.34.0): re-notify approvers about holds that have
+   * sat unapproved past the threshold, once per hold. The sweep runs on a
+   * small interval inside the server (unref'd, so it never keeps the
+   * process alive on its own) and once at boot, so a restart re-alerts
+   * any hold that aged while the server was down — unless it already
+   * alerted, in which case the persisted flag on the decision skips it.
+   * A sweep failure is logged, never thrown into a request.
+   */
+  const checkHoldAgingOnce = async (): Promise<void> => {
+    try {
+      const pending = await store.intents.pending();
+      await checkHoldAging(holdAging, {
+        pending,
+        notifyAging: (intent, decision, ageMs) => approvalNotifier.notifyAging(intent, decision, ageMs),
+        deliverWebhook: (event, intent, extra) => deliverWebhook(event, intent, extra),
+        audit: (kind, intentId, agentId, detail) =>
+          store.audit.append(kind as 'HOLD_AGING_ALERT', intentId, agentId, detail),
+        markAlerted: (intentId, decision) =>
+          store.intents.putDecision(intentId, { ...decision, holdAlertedAtMs: Date.now() }),
+        log: (message) => app.log.warn(message),
+      });
+    } catch (err) {
+      app.log.error({ err }, 'hold-aging check failed');
+    }
+  };
+  const holdAgingTimer = setInterval(() => {
+    void checkHoldAgingOnce();
+  }, holdAging.checkIntervalMs);
+  holdAgingTimer.unref();
+  // Sweep once at boot: holds that aged while the server was down alert
+  // promptly instead of waiting a full interval.
+  void checkHoldAgingOnce();
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
 }

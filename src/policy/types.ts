@@ -152,6 +152,14 @@ export interface Decision {
    * can neither add nor remove approvers from that hold.
    */
   quorumApprovers?: string[];
+  /**
+   * Hold-aging alert (v0.34.0): epoch ms when the single aging alert
+   * fired for this hold. Persisted with the decision, so a restart
+   * cannot lose the alert state — the sweep skips holds that carry it.
+   * Absent means the hold has never alerted. Approving or denying the
+   * hold replaces the decision, so the flag clears with the hold.
+   */
+  holdAlertedAtMs?: number;
 }
 
 /** Minimal rolling-window ledger. Async so a Postgres implementation can serve it. */

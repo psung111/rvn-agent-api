@@ -789,14 +789,51 @@ and logs the result in CHANGELOG.md.
     ratelimit, metrics, quorum, auth, mcp-auth, openapi, langchain
     suites still green. The OpenAPI spec + generated docs item is
     complete; the next top item is hold-aging alerts.
-- [ ] **Hold-aging alerts** — a hold that sits unapproved is silent
-  today. Add a configurable age threshold after which the server
-  re-notifies the approvers (Telegram + a `intent.hold_aging` webhook
-  event) once per hold, with the hold's age and n/N quorum progress in
-  the payload; the alert is audited, and approving/denying clears it.
-  No polling endpoint changes: the check runs on a small interval
-  inside the server (or on each submit/approve), so a restart cannot
-  lose the alert state.
+- [x] 2026-11-18 — v0.34.0 Hold-aging alerts (item complete): a hold
+  that sits unapproved is silent no more. New
+  `src/approvals/hold-aging.ts` — `holdAgingConfigFromEnv()` (lenient:
+  `RVN_HOLD_ALERT_AFTER_MS`, default 3600000 = 1h, 1000..7d;
+  `RVN_HOLD_ALERT_CHECK_MS`, default 60000, 1000..1h; invalid values
+  fall back, never a startup crash), `formatAgeMs()` ("45s" / "5m" /
+  "1h 5m" / "2d 3h"), `quorumProgressOf()` / `holdAgingInfoOf()` (the
+  n/N of M progress for the payload), `isHoldAgingDue()`, and the
+  `checkHoldAging()` sweep worker. Once a pending hold is older than
+  the threshold the sweep re-notifies the approvers exactly once per
+  hold: a Telegram reminder (`notifyAging` on the notifier interface —
+  `formatHoldAgingMessage` with the hold's age and quorum progress,
+  same Approve/Deny buttons so the approver can act from the
+  reminder) plus a new `intent.hold_aging` webhook event (fifth event
+  type; `holdAging: { ageMs, quorum? }` on the payload, subscribable
+  per endpoint like the others). The alert is audited as
+  `HOLD_AGING_ALERT` (new audit kind, with ageMs, notified, and the
+  quorum counts). The "once" is a persisted `Decision.holdAlertedAtMs`
+  flag — both stores JSON-serialize decisions, so no migration was
+  needed — and the sweep runs on an `unref`'d interval inside the
+  server plus once at boot, so a restart re-alerts holds that aged
+  while down but never double-fires one that already alerted. A
+  channel failure never blocks the other channel, the audit, or the
+  flag; a hold whose flag could not be persisted is not counted, so
+  the next sweep retries it. Approving or denying clears the alert
+  inherently: the decision leaves REQUIRE_APPROVAL, so it is no longer
+  pending. `/v1/health` reports `holdAging` (threshold, interval,
+  whether any channel is configured). No new route or tool: the
+  adapters keep the "cover every route" invariant unchanged.
+  Verified with new `pnpm test:hold-aging` (`demo/hold-aging-test.ts`,
+  71 checks: config/age/due/quorum/message units, sweep-worker units
+  incl. channel-failure and mark-failure behavior, and a booted-API
+  integration — Telegram reminder + webhook event fire exactly once
+  with age >= threshold, audit entry lands, hold stays pending, no
+  re-alert on later sweeps, approve clears it, and a quorum hold's
+  payload and reminder report 0/2); demo, mcp-smoke, approvals,
+  telegram-callback, simulate, reissue, subasset, unique, presets,
+  anomaly, store, archive, migrations, partition, webhooks,
+  ratelimit, metrics, quorum, auth, mcp-auth, openapi, docs,
+  langchain suites still green. Two version stragglers caught by the
+  drift checks and fixed in the same session: `src/openapi.ts`
+  `info.version` still said 0.33.0 (now 0.34.0), and the mcp-auth /
+  mcp-smoke version expectations updated to match. The hold-aging
+  alerts item is complete; the next top item is policy history +
+  rollback.
 - [ ] **Policy history + rollback** — a PUT or preset apply replaces a
   policy wholesale and the old one is gone except for a
   POLICY_REPLACED audit line. Keep the last N policy versions per

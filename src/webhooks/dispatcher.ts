@@ -3,7 +3,10 @@
  * an operator's own services (a dashboard, a SIEM, a Discord relay) can
  * react to what the policy engine does without polling /v1/audit.
  *
- * Slice 1: one URL, four event types, HMAC signing.
+ * Slice 1: one URL, four event types, HMAC signing. Slice 4 (v0.34.0)
+ * adds a fifth: `intent.hold_aging`, fired once per hold that sits
+ * unapproved past the configured age threshold (see
+ * src/approvals/hold-aging.ts).
  * Slice 2: multiple endpoints with per-event subscriptions. Config comes
  * from the environment:
  *
@@ -13,7 +16,7 @@
  *   RVN_WEBHOOK_SECRET — optional shared secret for the legacy endpoint.
  *   RVN_WEBHOOKS_JSON  — JSON array of endpoints, each
  *                        { url, secret?, events? } where `events` is a
- *                        subset of the four event types; an omitted
+ *                        subset of the five event types; an omitted
  *                        `events` means "all events". Malformed JSON,
  *                        malformed entries, non-http(s) URLs, and entries
  *                        whose events filter down to nothing are skipped
@@ -43,7 +46,8 @@ export type WebhookEvent =
   | 'intent.decided'
   | 'intent.executed'
   | 'intent.denied'
-  | 'intent.execution_failed';
+  | 'intent.execution_failed'
+  | 'intent.hold_aging';
 
 export interface WebhookPayload {
   event: WebhookEvent;
@@ -63,12 +67,30 @@ export interface WebhookPayload {
   txid?: string;
   /** Present on execution-failed events. */
   error?: string;
+  /**
+   * Present on hold-aging events (v0.34.0): how long the hold has sat
+   * unapproved, plus the quorum progress (n/N of M) when a quorum is
+   * in force for the hold.
+   */
+  holdAging?: {
+    ageMs: number;
+    quorum?: {
+      approvalsReceived: number;
+      approvalsRequired: number;
+      approversTotal?: number;
+    };
+  };
 }
 
 export function buildWebhookPayload(
   event: WebhookEvent,
   intent: RvnIntent,
-  extra: { decision?: Decision; txid?: string; error?: string } = {},
+  extra: {
+    decision?: Decision;
+    txid?: string;
+    error?: string;
+    holdAging?: WebhookPayload['holdAging'];
+  } = {},
   atMs: number = Date.now(),
 ): WebhookPayload {
   return {
@@ -88,6 +110,7 @@ export function buildWebhookPayload(
       : {}),
     ...(extra.txid !== undefined ? { txid: extra.txid } : {}),
     ...(extra.error !== undefined ? { error: extra.error } : {}),
+    ...(extra.holdAging !== undefined ? { holdAging: extra.holdAging } : {}),
   };
 }
 
@@ -190,6 +213,7 @@ const ALL_EVENTS: WebhookEvent[] = [
   'intent.executed',
   'intent.denied',
   'intent.execution_failed',
+  'intent.hold_aging',
 ];
 
 function isWebhookEvent(value: unknown): value is WebhookEvent {
@@ -353,7 +377,7 @@ export class WebhookDispatcher {
   async deliver(
     event: WebhookEvent,
     intent: RvnIntent,
-    extra: { decision?: Decision; txid?: string; error?: string } = {},
+    extra: { decision?: Decision; txid?: string; error?: string; holdAging?: WebhookPayload['holdAging'] } = {},
   ): Promise<number> {
     const targets = this.endpointsFor(event);
     if (targets.length === 0) return 0;
@@ -380,7 +404,7 @@ export class WebhookDispatcher {
   async deliverDetailed(
     event: WebhookEvent,
     intent: RvnIntent,
-    extra: { decision?: Decision; txid?: string; error?: string } = {},
+    extra: { decision?: Decision; txid?: string; error?: string; holdAging?: WebhookPayload['holdAging'] } = {},
   ): Promise<{ delivered: string[]; failed: string[] }> {
     const targets = this.endpointsFor(event);
     if (targets.length === 0) return { delivered: [], failed: [] };

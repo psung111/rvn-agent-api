@@ -16,6 +16,7 @@
  */
 import type { Decision, RvnIntent } from '../policy/types.js';
 import { buildInlineKeyboard } from './callbacks.js';
+import { formatAgeMs, quorumProgressOf } from './hold-aging.js';
 import { telegramApiBase } from './telegram-api.js';
 
 export interface ApprovalNotifier {
@@ -25,6 +26,13 @@ export interface ApprovalNotifier {
   enabled: boolean;
   /** Notify the owner that `intent` is held for approval. */
   notify(intent: RvnIntent, decision: Decision): Promise<void>;
+  /**
+   * Re-notify the owner that `intent` is still held (v0.34.0): the
+   * hold-aging reminder, sent once per hold after it has sat
+   * unapproved past the configured threshold. Same buttons as the
+   * original hold message, so the approver can act from the reminder.
+   */
+  notifyAging(intent: RvnIntent, decision: Decision, ageMs: number): Promise<void>;
 }
 
 export interface TelegramConfig {
@@ -102,6 +110,39 @@ export function formatApprovalMessage(intent: RvnIntent, decision: Decision): st
   return lines.join('\n');
 }
 
+/**
+ * Human-readable hold-aging reminder (v0.34.0). Same public facts as the
+ * hold message, plus how long the hold has sat and the quorum progress
+ * (n/N of M) when a quorum is in force — so the approver can see at a
+ * glance whether the hold is waiting on them or on someone else.
+ */
+export function formatHoldAgingMessage(intent: RvnIntent, decision: Decision, ageMs: number): string {
+  const waitingSince = new Date(decision.decidedAtMs).toISOString();
+  const quorum = quorumProgressOf(decision);
+  const lines = [
+    `⏰ Still waiting — RVN agent intent held ${formatAgeMs(ageMs)}`,
+    ``,
+    `op:        ${opLabel(intent)}`,
+    `intent:    ${intent.id}`,
+    `agent:     ${intent.agentId}`,
+    `asset:     ${intent.assetName}`,
+    `qty:       ${intent.qtyBaseUnits} base units`,
+    `dest:      ${intent.destination}`,
+    `reasons:   ${decision.reasonCodes.join(', ')}`,
+    ...(quorum
+      ? [
+          `approvals: ${quorum.approvalsReceived}/${quorum.approvalsRequired}${quorum.approversTotal !== undefined ? ` of ${quorum.approversTotal}` : ''}`,
+        ]
+      : []),
+    `waiting since: ${waitingSince}`,
+    ``,
+    `To approve (replace <API> with your host):`,
+    `curl -X POST <API>/v1/intents/${intent.id}/approve \\`,
+    `  -H 'content-type: application/json' -d '{"approver":"you"}'`,
+  ];
+  return lines.join('\n');
+}
+
 const MAX_MESSAGE_LEN = 4096;
 
 /**
@@ -154,6 +195,26 @@ export class TelegramApprovalNotifier implements ApprovalNotifier {
       await new Promise((r) => setTimeout(r, 500));
     }
   }
+
+  async notifyAging(intent: RvnIntent, decision: Decision, ageMs: number): Promise<void> {
+    // Same send path as the hold message (one retry, then throw), with
+    // the aging text instead — the approver can act from the reminder.
+    const text = formatHoldAgingMessage(intent, decision, ageMs).slice(0, MAX_MESSAGE_LEN);
+    const body = {
+      chat_id: chatIdFor(this.config, intent.agentId),
+      text,
+      disable_notification: false,
+      reply_markup: buildInlineKeyboard(intent.id),
+    };
+    for (let attempt = 1; ; attempt++) {
+      const { ok, status } = await this.sender(this.url, body);
+      if (ok) return;
+      if (attempt >= 2) {
+        throw new Error(`telegram sendMessage failed after ${attempt} attempts (status ${status})`);
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
 }
 
 export class NoopNotifier implements ApprovalNotifier {
@@ -161,6 +222,9 @@ export class NoopNotifier implements ApprovalNotifier {
   readonly enabled = false;
   async notify(_intent: RvnIntent, _decision: Decision): Promise<void> {
     // Intentionally silent: nothing configured, the intent waits for HTTP approval.
+  }
+  async notifyAging(_intent: RvnIntent, _decision: Decision, _ageMs: number): Promise<void> {
+    // Intentionally silent: nothing configured, no reminder to send.
   }
 }
 
