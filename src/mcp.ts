@@ -294,6 +294,35 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'get_policy_history',
+    description:
+      'List an agent\'s superseded policy versions (GET /v1/policies/:agentId/history), newest ' +
+      'first — the policy that was live, snapshotted when it was replaced. Pass a versionId ' +
+      'from here to rollback_policy to undo a bad change.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
+        limit: { type: 'number', description: 'Max versions to return (default: the configured history limit, 1..100)' },
+      },
+    },
+  },
+  {
+    name: 'rollback_policy',
+    description:
+      'Roll an agent\'s policy back to a history version (POST /v1/policies/:agentId/rollback). ' +
+      'The version\'s policy becomes live; the policy it replaces is archived as a new version, ' +
+      'so a rollback is itself undoable. Unknown versionId is an error and nothing changes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent identity (default: agent-1)' },
+        versionId: { type: 'string', description: 'Version id from get_policy_history' },
+      },
+      required: ['versionId'],
+    },
+  },
+  {
     name: 'get_ratelimit',
     description:
       'Read an agent\'s rate-limit stats (GET /v1/ratelimit/:agentId): whether the agent ' +
@@ -589,6 +618,20 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       });
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
+    case 'get_policy_history': {
+      const agentId = typeof args.agentId === 'string' && args.agentId ? args.agentId : 'agent-1';
+      const limit = typeof args.limit === 'number' ? `?limit=${encodeURIComponent(String(args.limit))}` : '';
+      const { status, body } = await api(`/v1/policies/${encodeURIComponent(agentId)}/history${limit}`);
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
+    case 'rollback_policy': {
+      const agentId = typeof args.agentId === 'string' && args.agentId ? args.agentId : 'agent-1';
+      const { status, body } = await api(`/v1/policies/${encodeURIComponent(agentId)}/rollback`, {
+        method: 'POST',
+        body: JSON.stringify({ versionId: args.versionId }),
+      });
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
     case 'get_ratelimit': {
       const agentId = typeof args.agentId === 'string' && args.agentId ? args.agentId : 'agent-1';
       const { status, body } = await api(`/v1/ratelimit/${encodeURIComponent(agentId)}`);
@@ -667,7 +710,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.34.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.35.0' },
       });
     }
     case 'notifications/initialized':

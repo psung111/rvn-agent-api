@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { Pool } from 'pg';
 import { makeChainedEntry, verifyChain, type AuditEntry, type AuditKind } from '../audit.js';
 import type { ApiKeyRecord, ApiScope } from '../auth/keys.js';
+import type { PolicyVersion } from '../policy/history.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
 import { applyMigrations, loadMigrations, type Migration } from './migrations.js';
 import { auditPartitionDdl, auditPartitionFor } from './partitions.js';
@@ -23,6 +24,22 @@ function rowToEntry(r: {
   };
 }
 
+function rowToPolicyVersion(r: {
+  version_id: string; agent_id: string; policy: RvnPolicy;
+  replaced_at_ms: string | number; replaced_by: string;
+  preset: string | null; source_version_id: string | null;
+}): PolicyVersion {
+  return {
+    versionId: r.version_id,
+    agentId: r.agent_id,
+    policy: r.policy,
+    replacedAtMs: Number(r.replaced_at_ms),
+    replacedBy: r.replaced_by as PolicyVersion['replacedBy'],
+    ...(r.preset === null ? {} : { preset: r.preset }),
+    ...(r.source_version_id === null ? {} : { sourceVersionId: r.source_version_id }),
+  };
+}
+
 class PostgresPolicyStore implements PolicyStore {
   constructor(private pool: Pool) {}
   async get(agentId: string): Promise<RvnPolicy | undefined> {
@@ -34,6 +51,48 @@ class PostgresPolicyStore implements PolicyStore {
       `INSERT INTO policies (agent_id, policy, updated_at) VALUES ($1, $2, now())
        ON CONFLICT (agent_id) DO UPDATE SET policy = EXCLUDED.policy, updated_at = now()`,
       [policy.agentId, JSON.stringify(policy)],
+    );
+  }
+  async history(agentId: string, limit = 100): Promise<PolicyVersion[]> {
+    const n = Math.min(Math.max(limit, 1), 1000);
+    const { rows } = await this.pool.query(
+      `SELECT version_id, agent_id, policy, replaced_at_ms, replaced_by, preset, source_version_id
+       FROM policy_history WHERE agent_id = $1
+       ORDER BY replaced_at_ms DESC, version_id DESC LIMIT $2`,
+      [agentId, n],
+    );
+    return rows.map(rowToPolicyVersion);
+  }
+  async getVersion(agentId: string, versionId: string): Promise<PolicyVersion | undefined> {
+    const { rows } = await this.pool.query(
+      `SELECT version_id, agent_id, policy, replaced_at_ms, replaced_by, preset, source_version_id
+       FROM policy_history WHERE agent_id = $1 AND version_id = $2`,
+      [agentId, versionId],
+    );
+    return rows[0] ? rowToPolicyVersion(rows[0]) : undefined;
+  }
+  async recordVersion(version: PolicyVersion, limit: number): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO policy_history
+         (version_id, agent_id, policy, replaced_at_ms, replaced_by, preset, source_version_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        version.versionId,
+        version.agentId,
+        JSON.stringify(version.policy),
+        version.replacedAtMs,
+        version.replacedBy,
+        version.preset ?? null,
+        version.sourceVersionId ?? null,
+      ],
+    );
+    // Prune the oldest beyond `limit`, keeping the newest `limit`.
+    // version_id breaks replaced_at_ms ties deterministically.
+    await this.pool.query(
+      `DELETE FROM policy_history WHERE agent_id = $1 AND version_id NOT IN (
+         SELECT version_id FROM policy_history WHERE agent_id = $1
+         ORDER BY replaced_at_ms DESC, version_id DESC LIMIT $2)`,
+      [version.agentId, Math.max(limit, 1)],
     );
   }
 }

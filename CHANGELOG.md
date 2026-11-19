@@ -1,5 +1,89 @@
 # Changelog
 
+## 2026-11-19 — v0.35.0 (Policy history + rollback, item complete)
+
+- Policy history + rollback: a PUT or preset apply no longer loses the
+  old policy. New `src/policy/history.ts` — `PolicyVersion` (versionId,
+  agentId, the snapshotted policy, replacedAtMs, replacedBy `put` /
+  `preset` / `rollback`, plus `preset` when the version came from a
+  preset apply and `sourceVersionId` when it was replaced by a
+  rollback), `policyHistoryLimitFromEnv()` (lenient:
+  `RVN_POLICY_HISTORY_LIMIT`, default 10, range 1..100; malformed
+  values fall back to the default, never a startup crash),
+  `newPolicyVersion()`, and `pruneVersions()` (newest N).
+- New `history` / `getVersion` / `recordVersion` seam on `PolicyStore`
+  (memory + Postgres): the server archives the agent's own stored
+  policy before every replacement — the `*` default is never archived,
+  and an agent with no stored policy has nothing to archive — keeping
+  the last N versions per agent. Migration `0006_policy_history`
+  (`policy_history` table: JSONB policy, `replaced_by` CHECK, agent
+  index). New `GET /v1/policies/:agentId/history` (newest first,
+  `?limit=` clamped 1..100, same per-agent binding as the other policy
+  routes) and `POST /v1/policies/:agentId/rollback` (body `versionId`;
+  unknown id 404s, missing id 400s, nothing changes; the restored
+  policy becomes live and the policy it replaces is archived as a new
+  version with `sourceVersionId`, so a rollback is itself undoable;
+  audited as POLICY_REPLACED naming the source version). `/v1/health`
+  reports `policyHistory.limit`.
+- Adapters keep the "cover every route" invariant: new
+  `get_policy_history` / `rollback_policy` MCP tools and LangChain
+  client methods + tools (`langchain_rvn` now builds 25 tools).
+  `initialize` now reports server version 0.35.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`); README route table
+  gained the history and rollback rows. The OpenAPI spec gained both
+  routes plus a `PolicyVersion` schema and a new shared `NotFound`
+  response component (the rollback route's 404 previously had no
+  component to reference).
+- New `pnpm test:policy-history` (`demo/policy-history-test.ts`, 47
+  checks): limit parsing (defaults, valid, non-numeric / below-min /
+  above-max / fractional fallbacks, max value), version snapshot
+  fields (distinct ids, preset / sourceVersionId carriage), prune
+  (newest N, under-limit, limit 0 keeps one), and a booted-API
+  integration — health reports the limit; fresh history empty; first
+  PUT archives nothing (no previous own policy); second PUT archives
+  the first policy with source `put`; preset apply archives newest-
+  first with source `preset` and the preset name; `?limit=1` caps the
+  rows; rollback restores the named version and the live policy reads
+  back; the rollback archives the replaced policy with
+  `sourceVersionId`, and rolling back that version restores the preset
+  policy (rollback is undoable); unknown version 404s, missing
+  versionId 400s, both leave the live policy alone; the rollback is
+  audited as POLICY_REPLACED with `rollbackFrom`; chain valid. A
+  second API with `RVN_POLICY_HISTORY_LIMIT=2` proves the cap (4 PUTs
+  → 2 versions, oldest dropped and no longer rollbackable), and an
+  auth-on API proves a per-agent key reads only its own history (403
+  on another agent's history and rollback). `pnpm test:store` gained
+  history-seam checks in the shared suite (both backends);
+  `demo/migration-test.ts` and `demo/partition-test.ts` updated for
+  migration 0006; `demo/mcp-smoke.ts` gained a policy-history section
+  (6 checks) and its openapi/docs version expectations moved to
+  0.35.0; `pnpm test:langchain` updated (25 tools, client + tool
+  history/rollback shape). `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`,
+  `pnpm test:simulate`, `pnpm test:reissue`,
+  `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`, `pnpm test:langchain`
+  still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:policy-history`
+  script. No local Postgres on this VM, so the Postgres live legs
+  were skipped (as in recent sessions); the migration is validated by
+  the fake-pool runner in `pnpm test:migrations` and the new SQL by
+  the shared store-suite seam checks. Two version stragglers caught
+  by the drift checks and fixed in the same session: the partition
+  test's hardcoded five-migration expectations and the mcp-auth
+  version expectation, both now six migrations / 0.35.0.
+- The policy history + rollback item is complete; the next top item
+  is balance-aware simulate.
+
 ## 2026-11-18 — v0.34.0 (Hold-aging alerts, item complete)
 
 - Hold-aging alerts: a hold that sits unapproved is silent no more. New

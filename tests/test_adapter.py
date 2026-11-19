@@ -151,12 +151,13 @@ def main():
         # --- LangChain tools ---
         tools = get_tools(client)
         by_name = {t.name: t for t in tools}
-        check("23 tools built", len(tools) == 23, sorted(by_name))
+        check("25 tools built", len(tools) == 25, sorted(by_name))
         check("tool names cover every route",
               {"issue_asset", "reissue_asset", "issue_subasset", "issue_unique",
                "transfer_asset", "list_assets", "get_asset", "simulate_intent",
                "approve_intent", "deny_intent", "pending_intents", "get_policy",
-               "set_policy", "list_presets", "apply_preset", "get_ratelimit",
+               "set_policy", "list_presets", "apply_preset", "get_policy_history",
+               "rollback_policy", "get_ratelimit",
                "get_anomaly_stats", "get_metrics", "get_openapi", "get_docs", "get_audit",
                "archive_audit", "create_wallet"} == set(by_name))
         stats = client.get_ratelimit()
@@ -176,6 +177,32 @@ def main():
               and tool_anom.get("bySignal") == {"QTY_OUTLIER": 0,
                                                  "FIRST_SEEN_DESTINATION_BURST": 0},
               tool_anom)
+        # Policy history + rollback (v0.35.0): the permissive preset apply
+        # above is the agent's first own policy, so the next set archives it.
+        base = client.get_policy()
+        hist0 = client.get_policy_history()
+        check("client get_policy_history: empty before any replacement",
+              hist0.get("versions") == [] and hist0.get("agentId") == AGENT, hist0)
+        client.set_policy({**base, "maxIssueQtyBaseUnits": "777"})
+        hist = client.get_policy_history()
+        check("client get_policy_history: one superseded version, source put",
+              len(hist.get("versions", [])) == 1
+              and hist["versions"][0]["policy"]["maxIssueQtyBaseUnits"] == "10000000"
+              and hist["versions"][0]["replacedBy"] == "put", hist)
+        vid = hist["versions"][0]["versionId"]
+        tool_hist = json.loads(by_name["get_policy_history"].invoke({}))
+        check("tool get_policy_history matches the client shape",
+              len(tool_hist.get("versions", [])) == 1
+              and tool_hist["versions"][0]["versionId"] == vid, tool_hist)
+        rolled = client.rollback_policy(vid)
+        check("client rollback_policy restores the version",
+              rolled.get("policy", {}).get("maxIssueQtyBaseUnits") == "10000000"
+              and rolled.get("restoredFrom") == vid, rolled)
+        check("policy reads back the restored one",
+              client.get_policy()["maxIssueQtyBaseUnits"] == "10000000")
+        tool_rb = json.loads(by_name["rollback_policy"].invoke({"version_id": vid}))
+        check("tool rollback_policy restores the same version again",
+              tool_rb.get("policy", {}).get("maxIssueQtyBaseUnits") == "10000000", tool_rb)
         metrics = client.get_metrics()
         check("client get_metrics: decisions counted, memory store, chain valid",
               metrics.get("store") == "memory"

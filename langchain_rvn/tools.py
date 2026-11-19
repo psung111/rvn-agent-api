@@ -249,6 +249,28 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
+    def get_policy_history(limit: int = 0) -> str:
+        """List the calling agent's superseded policy versions, newest
+        first. Pass a versionId from here to rollback_policy to undo a
+        bad change. limit 0 means the server default."""
+        try:
+            return _dump(
+                client.get_policy_history(limit=limit if limit else None)
+            )
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
+    def rollback_policy(version_id: str) -> str:
+        """Roll the calling agent's policy back to a history version.
+        The version's policy becomes live; the policy it replaces is
+        archived as a new version, so a rollback is itself undoable."""
+        try:
+            return _dump(client.rollback_policy(version_id))
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
     def get_ratelimit() -> str:
         """Read the calling agent's rate-limit stats: whether it is
         limited, the whole-token balance, refill rate, and seconds until
@@ -352,6 +374,8 @@ def build_tools(client: RvnApiClient) -> list:
         set_policy,
         list_presets,
         apply_preset,
+        get_policy_history,
+        rollback_policy,
         get_ratelimit,
         get_anomaly_stats,
         get_metrics,

@@ -19,7 +19,7 @@
 import { Pool } from 'pg';
 import { verifyChain, type AuditEntry } from '../src/audit.js';
 import { generateApiKey, hashApiKey, verifyApiKey } from '../src/auth/keys.js';
-import { defaultPolicy, type Decision, type RvnIntent, type RvnPolicy } from '../src/policy/index.js';
+import { defaultPolicy, newPolicyVersion, type Decision, type RvnIntent, type RvnPolicy } from '../src/policy/index.js';
 import { MemoryStore, PostgresStore, storeFromEnv, type Store } from '../src/store/index.js';
 
 let failures = 0;
@@ -59,6 +59,35 @@ async function runSuite(label: string, store: Store) {
   const fetched = await store.policies.get('agent-7');
   check('policy set/get round-trip', fetched?.maxIssueQtyBaseUnits === '42', fetched);
   check('unknown agent policy is undefined', (await store.policies.get('nope')) === undefined);
+
+  // Policy history (v0.35.0): superseded versions, newest first, capped
+  // per agent; getVersion looks one up by id.
+  const histAgent = `${label}-policy-hist-agent`;
+  check('policy history starts empty', (await store.policies.history(histAgent)).length === 0);
+  check('getVersion for an unknown id is undefined',
+    (await store.policies.getVersion(histAgent, 'nope')) === undefined);
+  const pA: RvnPolicy = { ...defaultPolicy(histAgent), maxIssueQtyBaseUnits: '111' };
+  const pB: RvnPolicy = { ...defaultPolicy(histAgent), maxIssueQtyBaseUnits: '222' };
+  const pC: RvnPolicy = { ...defaultPolicy(histAgent), maxIssueQtyBaseUnits: '333' };
+  await store.policies.recordVersion(newPolicyVersion(pA, 'put', 1000), 10);
+  await store.policies.recordVersion(newPolicyVersion(pB, 'preset', 2000, { preset: 'balanced' }), 10);
+  const versions = await store.policies.history(histAgent);
+  check('policy history newest-first with source + preset',
+    versions.length === 2 && versions[0].policy.maxIssueQtyBaseUnits === '222' &&
+    versions[0].replacedBy === 'preset' && versions[0].preset === 'balanced' &&
+    versions[1].policy.maxIssueQtyBaseUnits === '111' && versions[1].replacedBy === 'put',
+    versions);
+  check('policy history limit is honored', (await store.policies.history(histAgent, 1)).length === 1);
+  check('getVersion returns the named version',
+    (await store.policies.getVersion(histAgent, versions[1].versionId))?.policy.maxIssueQtyBaseUnits === '111');
+  check('policy history is per-agent', (await store.policies.history('nobody')).length === 0);
+  await store.policies.recordVersion(newPolicyVersion(pC, 'rollback', 3000, { sourceVersionId: versions[0].versionId }), 2);
+  const capped = await store.policies.history(histAgent);
+  check('recordVersion prunes to the limit, oldest dropped',
+    capped.length === 2 && capped[0].policy.maxIssueQtyBaseUnits === '333' &&
+    capped[0].replacedBy === 'rollback' && capped[0].sourceVersionId === versions[0].versionId &&
+    capped[1].policy.maxIssueQtyBaseUnits === '222', capped);
+  check('pruned version is gone', (await store.policies.getVersion(histAgent, versions[1].versionId)) === undefined);
 
   // Intents + decisions.
   const intent = makeIntent(`${label}-intent-1`);

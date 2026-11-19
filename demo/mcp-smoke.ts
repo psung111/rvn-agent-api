@@ -31,6 +31,9 @@
  *       every route present, Decision schema carries the reason codes)
  *   25. get_docs via MCP (the docs page: HTML at the package version, every
  *       spec path, the decision model)
+ *   26. policy history / rollback via MCP (v0.35.0): set_policy twice, history
+ *       lists the superseded version, rollback restores it, unknown version
+ *       isError
  *
  * Usage: pnpm mcp-smoke   (API must be running, default http://localhost:3001)
  */
@@ -466,7 +469,7 @@ async function main(): Promise<void> {
   // Decision schema carries the full reason-code enum.
   const spec = await toolCall('get_openapi', {});
   check('get_openapi via MCP returns the OpenAPI 3.0.3 contract at the package version',
-    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.34.0' &&
+    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.35.0' &&
     typeof spec.body.paths === 'object' && '/v1/assets/issue' in spec.body.paths &&
     '/v1/openapi.json' in spec.body.paths && '/v1/docs' in spec.body.paths &&
     Array.isArray(spec.body.components?.schemas?.Decision?.properties?.reasonCodes?.items?.enum) &&
@@ -477,10 +480,41 @@ async function main(): Promise<void> {
   const docs = await toolCall('get_docs', {});
   check('get_docs via MCP returns the docs HTML at the package version',
     docs.ok && docs.body.httpStatus === 200 && typeof docs.body.html === 'string' &&
-    docs.body.html.includes(`<title>rvn-agent-api 0.34.0 — API docs</title>`) &&
+    docs.body.html.includes(`<title>rvn-agent-api 0.35.0 — API docs</title>`) &&
     docs.body.html.includes('/v1/assets/issue') && docs.body.html.includes('/v1/docs') &&
     docs.body.html.includes('<h2>Decision model</h2>') &&
     docs.body.html.includes('<code>RATE_LIMIT_EXCEEDED</code>'), docs.body.html?.slice(0, 200));
+
+  // 26. policy history / rollback via MCP (v0.35.0) — set a policy twice,
+  // history lists the superseded version, rollback restores it, and an
+  // unknown version id is an error.
+  const histAgent = 'mcp-hist-agent';
+  const basePolicy = await toolCall('get_policy', { agentId: histAgent });
+  check('get_policy for the history agent returns a v1 policy',
+    basePolicy.ok && basePolicy.body.version === 1, basePolicy.body);
+  const setA = await toolCall('set_policy', {
+    agentId: histAgent,
+    policy: { ...basePolicy.body, maxIssueQtyBaseUnits: '1111' },
+  });
+  check('set_policy A via MCP succeeds', setA.ok && setA.body.httpStatus === 200, setA.body);
+  const setB = await toolCall('set_policy', {
+    agentId: histAgent,
+    policy: { ...basePolicy.body, maxIssueQtyBaseUnits: '2222' },
+  });
+  check('set_policy B via MCP succeeds', setB.ok && setB.body.httpStatus === 200, setB.body);
+  const hist = await toolCall('get_policy_history', { agentId: histAgent });
+  check('get_policy_history via MCP lists the superseded version',
+    hist.ok && hist.body.versions?.length === 1 &&
+    hist.body.versions[0].policy.maxIssueQtyBaseUnits === '1111' &&
+    hist.body.versions[0].replacedBy === 'put', hist.body);
+  const versionId = hist.body.versions[0].versionId;
+  const rb = await toolCall('rollback_policy', { agentId: histAgent, versionId });
+  check('rollback_policy via MCP restores the version',
+    rb.ok && rb.body.httpStatus === 200 && rb.body.policy.maxIssueQtyBaseUnits === '1111' &&
+    rb.body.restoredFrom === versionId, rb.body);
+  const rbBad = await toolCall('rollback_policy', { agentId: histAgent, versionId: 'no-such-version' });
+  check('rollback_policy via MCP errors on an unknown version',
+    !rbBad.ok && rbBad.body.httpStatus === 404, rbBad.body);
 
   child.kill();
   shuttingDown = true;

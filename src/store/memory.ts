@@ -1,17 +1,36 @@
 import { AuditLog } from '../audit.js';
 import type { ApiKeyRecord } from '../auth/keys.js';
-import { defaultPolicy, InMemoryIssueLedger } from '../policy/index.js';
+import { defaultPolicy, InMemoryIssueLedger, pruneVersions } from '../policy/index.js';
+import type { PolicyVersion } from '../policy/history.js';
 import type { AuditEntry, AuditKind } from '../audit.js';
 import type { Decision, RvnIntent, RvnPolicy } from '../policy/index.js';
 import type { ApiKeyStore, AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
 
 class MemoryPolicyStore implements PolicyStore {
   private policies = new Map<string, RvnPolicy>([['*', defaultPolicy()]]);
+  /** Superseded versions per agent, newest first. */
+  private versions = new Map<string, PolicyVersion[]>();
   async get(agentId: string): Promise<RvnPolicy | undefined> {
     return this.policies.get(agentId);
   }
   async set(policy: RvnPolicy): Promise<void> {
     this.policies.set(policy.agentId, policy);
+  }
+  async history(agentId: string, limit = 100): Promise<PolicyVersion[]> {
+    const n = Math.min(Math.max(limit, 1), 1000);
+    return (this.versions.get(agentId) ?? [])
+      .slice(0, n)
+      .map((v) => ({ ...v, policy: { ...v.policy } }));
+  }
+  async getVersion(agentId: string, versionId: string): Promise<PolicyVersion | undefined> {
+    const v = (this.versions.get(agentId) ?? []).find((x) => x.versionId === versionId);
+    return v ? { ...v, policy: { ...v.policy } } : undefined;
+  }
+  async recordVersion(version: PolicyVersion, limit: number): Promise<void> {
+    const list = this.versions.get(version.agentId) ?? [];
+    // Newest first; pruneVersions keeps the newest `limit`.
+    list.unshift({ ...version, policy: { ...version.policy } });
+    this.versions.set(version.agentId, pruneVersions(list, limit));
   }
 }
 

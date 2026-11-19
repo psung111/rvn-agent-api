@@ -42,7 +42,8 @@
     "test:langchain": "python3 tests/test_adapter.py",
     "test:openapi": "tsx demo/openapi-test.ts",
     "test:docs": "tsx demo/docs-test.ts",
-    "test:hold-aging": "tsx demo/hold-aging-test.ts"
+    "test:hold-aging": "tsx demo/hold-aging-test.ts",
+    "test:policy-history": "tsx demo/policy-history-test.ts"
   },
-  "version": "0.34.0"
+  "version": "0.35.0"
 }

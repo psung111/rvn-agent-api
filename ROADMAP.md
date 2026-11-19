@@ -834,14 +834,52 @@ and logs the result in CHANGELOG.md.
   mcp-smoke version expectations updated to match. The hold-aging
   alerts item is complete; the next top item is policy history +
   rollback.
-- [ ] **Policy history + rollback** — a PUT or preset apply replaces a
-  policy wholesale and the old one is gone except for a
-  POLICY_REPLACED audit line. Keep the last N policy versions per
-  agent in the store (memory + Postgres), add
-  `GET /v1/policies/:agentId/history` and
-  `POST /v1/policies/:agentId/rollback` (restore a named version,
-  audited as POLICY_REPLACED with the source version), so a bad
-  policy change is one call to undo instead of a re-typed PUT.
+- [x] 2026-11-19 — v0.35.0 Policy history + rollback (item complete):
+  a PUT or preset apply no longer loses the old policy. New
+  `src/policy/history.ts` — `PolicyVersion` (versionId, agentId, the
+  snapshotted policy, replacedAtMs, replacedBy `put` / `preset` /
+  `rollback`, plus `preset` when the version came from a preset apply
+  and `sourceVersionId` when it was replaced by a rollback),
+  `policyHistoryLimitFromEnv()` (lenient: `RVN_POLICY_HISTORY_LIMIT`,
+  default 10, range 1..100, malformed falls back, never a startup
+  crash), `newPolicyVersion()`, and `pruneVersions()` (newest N).
+  New `history` / `getVersion` / `recordVersion` seam on
+  `PolicyStore` (memory + Postgres): the server archives the agent's
+  own stored policy before every replacement — the `*` default is
+  never archived, and an agent with no stored policy has nothing to
+  archive — keeping the last N versions per agent. Migration
+  `0006_policy_history` (`policy_history` table, JSONB policy,
+  `replaced_by` CHECK, agent index). New
+  `GET /v1/policies/:agentId/history` (newest first, `?limit=`
+  clamped 1..100, same per-agent binding as the other policy routes)
+  and `POST /v1/policies/:agentId/rollback` (body `versionId`;
+  unknown id 404s, missing id 400s, nothing changes; the restored
+  policy becomes live and the policy it replaces is archived as a new
+  version with `sourceVersionId`, so a rollback is itself undoable;
+  audited as POLICY_REPLACED naming the source version).
+  `/v1/health` reports `policyHistory.limit`. New
+  `get_policy_history` / `rollback_policy` MCP tools and LangChain
+  client methods + tools (25 tools now), keeping the "adapters cover
+  every route" invariant. Verified with new
+  `pnpm test:policy-history` (`demo/policy-history-test.ts`, 47
+  checks: limit parsing, version/prune units, and a booted-API
+  integration — first PUT archives nothing, second PUT and preset
+  apply archive newest-first with source + preset, rollback restores
+  and is undoable, 404/400 paths leave the live policy alone,
+  rollback audited with `rollbackFrom`, the limit env caps history at
+  2 with the oldest dropped, and an auth-on leg proving a per-agent
+  key reads only its own history), new history-seam checks in
+  `pnpm test:store` (both backends), and migration/partition test
+  updates for 0006; demo, mcp-smoke, approvals,
+  telegram-callback, simulate, reissue, subasset, unique, presets,
+  anomaly, store, archive, migrations, partition, webhooks,
+  ratelimit, metrics, quorum, auth, mcp-auth, openapi, docs,
+  langchain suites still green. Two version stragglers caught by the
+  drift checks and fixed in the same session: the partition test's
+  hardcoded five-migration expectations and the mcp-auth version
+  expectation, both now 0.35.0 / six migrations. The policy history
+  + rollback item is complete; the next top item is balance-aware
+  simulate.
 - [ ] **Balance-aware simulate** — `simulate` answers the policy
   question but not the funding question: on the real node it should
   also report whether the source wallet can fund the operation

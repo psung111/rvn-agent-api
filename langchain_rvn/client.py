@@ -324,6 +324,30 @@ class RvnApiClient:
             {"preset": preset, "overrides": overrides or {}},
         )
 
+    def get_policy_history(
+        self, agent_id: Optional[str] = None, limit: Optional[int] = None
+    ) -> dict[str, Any]:
+        """Superseded policy versions for an agent, newest first. The live
+        policy is never in the list."""
+        query = {"limit": str(limit)} if limit is not None else None
+        return self._call(
+            "GET",
+            f"/v1/policies/{agent_id or self.agent_id}/history",
+            query=query,
+        )
+
+    def rollback_policy(
+        self, version_id: str, agent_id: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Restore a history version as the live policy. The policy it
+        replaces is archived as a new version, so a rollback is itself
+        undoable."""
+        return self._call(
+            "POST",
+            f"/v1/policies/{agent_id or self.agent_id}/rollback",
+            {"versionId": version_id},
+        )
+
     # -- rate limiting ----------------------------------------------------
 
     def get_ratelimit(self, agent_id: Optional[str] = None) -> dict[str, Any]:

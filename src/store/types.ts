@@ -1,11 +1,25 @@
 import type { ApiKeyRecord } from '../auth/keys.js';
 import type { AuditEntry, AuditKind } from '../audit.js';
+import type { PolicyVersion } from '../policy/history.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
 
 /** Policy documents keyed by agent id ('*' is the default). */
 export interface PolicyStore {
   get(agentId: string): Promise<RvnPolicy | undefined>;
   set(policy: RvnPolicy): Promise<void>;
+  /**
+   * Superseded policy versions for one agent (v0.35.0), newest first.
+   * The live policy is never in the list — only versions it replaced.
+   */
+  history(agentId: string, limit?: number): Promise<PolicyVersion[]>;
+  /** One superseded version, by id. */
+  getVersion(agentId: string, versionId: string): Promise<PolicyVersion | undefined>;
+  /**
+   * Append a superseded version, keeping at most `limit` per agent
+   * (oldest dropped). The caller records the previous policy before
+   * storing the replacement.
+   */
+  recordVersion(version: PolicyVersion, limit: number): Promise<void>;
 }
 
 /** Submitted intents and their latest decisions, keyed by intent id. */

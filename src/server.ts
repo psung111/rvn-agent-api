@@ -33,7 +33,9 @@ import {
   detectAnomalies,
   evaluateIntent,
   isExpired,
+  newPolicyVersion,
   POLICY_PRESETS,
+  policyHistoryLimitFromEnv,
   rateLimitFromPolicy,
   rateLimitKindKey,
   rateLimitsPerKindFromPolicy,
@@ -44,6 +46,7 @@ import {
   validateRateLimitKindFields,
   type AnomalySignal,
   type Decision,
+  type PolicyReplacementSource,
   type RateLimitConfig,
   type RvnIntent,
   type RvnPolicy,
@@ -80,6 +83,9 @@ const retention = retentionConfigFromEnv();
 // alertAfterMs gets one Telegram reminder + one intent.hold_aging webhook
 // event, audited as HOLD_AGING_ALERT; the sweep runs on an interval.
 const holdAging = holdAgingConfigFromEnv();
+// Policy history (v0.35.0): superseded versions kept per agent, so a bad
+// change is one rollback call to undo. The '*' default is never archived.
+const policyHistoryLimit = policyHistoryLimitFromEnv();
 const telegramConfig = telegramConfigFromEnv();
 const telegramApi = telegramConfig ? new TelegramApi(telegramConfig.botToken) : null;
 // API-key auth (v0.29.0): off by default (the localhost demo posture);
@@ -286,6 +292,31 @@ async function main() {
 
   const policyFor = async (agentId: string): Promise<RvnPolicy> =>
     (await store.policies.get(agentId)) ?? (await store.policies.get('*')) ?? defaultPolicy();
+
+  /**
+   * Replace an agent's policy and archive the superseded one (v0.35.0):
+   * when the agent already has its own stored policy it is recorded as a
+   * history version (source = how it is being replaced) before the new
+   * policy lands, keeping the last `policyHistoryLimit` versions. The '*'
+   * default is never archived — it is not an agent's own policy — and an
+   * agent with no stored policy has nothing to archive. A failed archive
+   * fails the replacement, so history can never silently lose a version.
+   */
+  const replacePolicy = async (
+    agentId: string,
+    policy: RvnPolicy,
+    replacedBy: PolicyReplacementSource,
+    extra: { preset?: string; sourceVersionId?: string } = {},
+  ): Promise<void> => {
+    const previous = await store.policies.get(agentId);
+    if (previous) {
+      await store.policies.recordVersion(
+        newPolicyVersion(previous, replacedBy, Date.now(), extra),
+        policyHistoryLimit,
+      );
+    }
+    await store.policies.set(policy);
+  };
 
   // Per-agent token buckets for the rate-limit gate. Buckets live in
   // server memory for the gate itself, but are persisted in the store
@@ -728,6 +759,9 @@ async function main() {
         // An alert is useful when at least one channel can carry it;
         // with neither configured the sweep still audits HOLD_AGING_ALERT.
         enabled: approvalNotifier.enabled || webhookDispatcher.enabled,
+      },
+      policyHistory: {
+        limit: policyHistoryLimit,
       },
       webhooks: {
         configured: webhookDispatcher.enabled,
@@ -1395,7 +1429,7 @@ async function main() {
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
-    await store.policies.set(policy);
+    await replacePolicy(agentId, policy, 'preset', { preset: presetId });
     await store.audit.append('DECISION', 'policy-update', agentId, {
       kind: 'POLICY_REPLACED',
       preset: presetId,
@@ -1443,9 +1477,54 @@ async function main() {
     if (quorumError) {
       return reply.code(400).send({ error: quorumError });
     }
-    await store.policies.set(b as RvnPolicy);
+    await replacePolicy(agentId, b as RvnPolicy, 'put');
     await store.audit.append('DECISION', 'policy-update', agentId, { kind: 'POLICY_REPLACED' });
     return { policy: b };
+  });
+
+  /**
+   * Policy history (v0.35.0): the superseded versions for an agent, newest
+   * first. The live policy is never in the list. `?limit=` caps the rows
+   * returned (default = the configured history limit, clamped 1..100).
+   * Same per-agent binding as the other policy routes.
+   */
+  app.get('/v1/policies/:agentId/history', async (req, reply) => {
+    const { agentId } = req.params as { agentId: string };
+    const forbidden = await checkAgentParam(req, agentId);
+    if (forbidden) return reply.code(403).send({ error: forbidden });
+    const q = req.query as { limit?: string };
+    const limit = q.limit === undefined
+      ? policyHistoryLimit
+      : Math.min(Math.max(Number(q.limit) || policyHistoryLimit, 1), 100);
+    const versions = await store.policies.history(agentId, limit);
+    return { agentId, limit, versions };
+  });
+
+  /**
+   * Roll back an agent's policy to a named history version (v0.35.0):
+   * the version's policy becomes live, the policy it replaces is archived
+   * as a new version (so a rollback is itself undoable), and the change is
+   * audited as POLICY_REPLACED naming the source version. Unknown
+   * versionId -> 404, nothing changed.
+   */
+  app.post('/v1/policies/:agentId/rollback', async (req, reply) => {
+    const { agentId } = req.params as { agentId: string };
+    const forbidden = await checkAgentParam(req, agentId);
+    if (forbidden) return reply.code(403).send({ error: forbidden });
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const versionId = b.versionId;
+    if (typeof versionId !== 'string' || !versionId) {
+      return reply.code(400).send({ error: 'versionId is required' });
+    }
+    const version = await store.policies.getVersion(agentId, versionId);
+    if (!version) return reply.code(404).send({ error: 'unknown policy version' });
+    const policy: RvnPolicy = { ...version.policy, agentId };
+    await replacePolicy(agentId, policy, 'rollback', { sourceVersionId: versionId });
+    await store.audit.append('DECISION', 'policy-update', agentId, {
+      kind: 'POLICY_REPLACED',
+      rollbackFrom: versionId,
+    });
+    return { policy, restoredFrom: versionId };
   });
 
   /**

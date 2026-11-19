@@ -67,9 +67,11 @@ verifies clean.
 | GET | `/v1/audit` | hash-chained audit trail (`chainValid`) |
 | POST | `/v1/audit/archive` | archive entries older than `beforeMs` (epoch ms; omitted = retention policy, `RVN_AUDIT_RETENTION_DAYS`, default 90 days) to a JSON file with a chain-verification proof, then prune them from the live chain (newest entry always kept as the anchor) |
 | GET | `/v1/policies/:agentId` | fetch an agent's policy |
-| PUT | `/v1/policies/:agentId` | replace an agent's policy |
+| PUT | `/v1/policies/:agentId` | replace an agent's policy (the superseded policy is kept in history) |
 | GET | `/v1/policies/presets` | list the policy presets (conservative / balanced / permissive) |
 | POST | `/v1/policies/:agentId/preset` | apply a preset to an agent, with optional per-agent `overrides` |
+| GET | `/v1/policies/:agentId/history` | superseded policy versions for an agent, newest first (`?limit=`, default 10) |
+| POST | `/v1/policies/:agentId/rollback` | restore a history version as the live policy (body: `versionId`); the replaced policy is archived, so a rollback is itself undoable |
 | GET | `/v1/ratelimit/:agentId` | rate-limit stats for an agent (read-only) |
 | GET | `/v1/anomaly/:agentId?windowHours=` | anomaly stats for an agent: holds raised by signal, holds still pending, thresholds in force (read-only) |
 | GET | `/v1/metrics` | ops metrics: decision counts by kind and reason code, rate-limit 429s by agent and kind, webhook deliveries by endpoint, approval hold age, store backend (read-only) |

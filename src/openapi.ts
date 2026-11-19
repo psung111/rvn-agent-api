@@ -42,7 +42,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.34.0',
+    version: '0.35.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -783,7 +783,9 @@ export const openApiDocument = {
           'Wholesale replace (all required fields must be present; `version` must be 1 and `agentId` ' +
           'must match the path). Rate-limit fields must be set as a pair or neither; quorum fields ' +
           'follow the all-or-nothing rule; anomaly fields must be positive integers. A bad field is ' +
-          'a 400 and nothing is stored. Audited as POLICY_REPLACED.',
+          'a 400 and nothing is stored. The superseded policy is kept in history ' +
+          '(GET /v1/policies/:agentId/history) and can be restored with a rollback. ' +
+          'Audited as POLICY_REPLACED.',
         parameters: [
           { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
         ],
@@ -856,6 +858,90 @@ export const openApiDocument = {
           '400': { $ref: '#/components/responses/BadRequest' },
           '401': { $ref: '#/components/responses/Unauthorized' },
           '403': { $ref: '#/components/responses/Forbidden' },
+        },
+      },
+    },
+    '/v1/policies/{agentId}/history': {
+      get: {
+        tags: ['Policies'],
+        summary: 'List an agent\'s superseded policy versions',
+        description:
+          'Superseded policy versions for an agent, newest first — the policy that was live, ' +
+          'snapshotted when it was replaced. The live policy is never in the list. `limit` caps ' +
+          'the rows returned (default = the configured history limit, clamped 1..100). A ' +
+          'non-operator key may only read its own agent.',
+        parameters: [
+          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'limit', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100 } },
+        ],
+        responses: {
+          '200': {
+            description: 'History versions, newest first.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['agentId', 'limit', 'versions'],
+                  properties: {
+                    agentId: { type: 'string' },
+                    limit: { type: 'integer' },
+                    versions: { type: 'array', items: { $ref: '#/components/schemas/PolicyVersion' } },
+                  },
+                },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+        },
+      },
+    },
+    '/v1/policies/{agentId}/rollback': {
+      post: {
+        tags: ['Policies'],
+        summary: 'Roll back an agent\'s policy to a history version',
+        description:
+          'Restores the named history version as the live policy. The policy it replaces is ' +
+          'archived as a new version, so a rollback is itself undoable. Audited as ' +
+          'POLICY_REPLACED naming the source version. Unknown versionId is a 404 and nothing ' +
+          'changes.',
+        parameters: [
+          { name: 'agentId', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['versionId'],
+                properties: {
+                  versionId: { type: 'string', description: 'Version id from GET /v1/policies/:agentId/history.' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Restored policy.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['policy', 'restoredFrom'],
+                  properties: {
+                    policy: { $ref: '#/components/schemas/RvnPolicy' },
+                    restoredFrom: { type: 'string', description: 'The version id that was restored.' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/BadRequest' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '404': { $ref: '#/components/responses/NotFound' },
         },
       },
     },
@@ -1074,6 +1160,20 @@ export const openApiDocument = {
           quorumAboveIssueQtyBaseUnits: { type: 'string', description: 'Optional supply-creating qty above this needs quorum.' },
           quorumAboveTransferQtyBaseUnits: { type: 'string', description: 'Optional transfer qty above this needs quorum.' },
           quorumApprovers: { type: 'array', items: { type: 'string' }, description: 'Optional approver roster (M): only these identities count toward quorum; the count must not exceed the roster size.' },
+        },
+      },
+      PolicyVersion: {
+        type: 'object',
+        description: 'A superseded policy version: the policy that was live for an agent, snapshotted when it was replaced. The live policy is never a version.',
+        required: ['versionId', 'agentId', 'policy', 'replacedAtMs', 'replacedBy'],
+        properties: {
+          versionId: { type: 'string', description: 'Opaque id to pass to POST /v1/policies/:agentId/rollback.' },
+          agentId: { type: 'string' },
+          policy: { $ref: '#/components/schemas/RvnPolicy' },
+          replacedAtMs: { type: 'integer', description: 'Epoch ms when this policy stopped being live.' },
+          replacedBy: { type: 'string', enum: ['put', 'preset', 'rollback'], description: 'How it was replaced.' },
+          preset: { type: 'string', description: 'Present when the version came from a preset apply: the preset that produced it.' },
+          sourceVersionId: { type: 'string', description: 'Present when the version was replaced by a rollback: the version that was restored.' },
         },
       },
       SubmitResult: {
@@ -1311,6 +1411,10 @@ export const openApiDocument = {
       },
       Forbidden: {
         description: 'Valid key, but not allowed: acting as another agent, admin surface without the operator key, or a scope the key lacks.',
+        content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+      },
+      NotFound: {
+        description: 'Unknown id (intent, policy version, or API key). Nothing was changed.',
         content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
       },
       NodeFailed: {
