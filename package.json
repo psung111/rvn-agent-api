@@ -43,7 +43,8 @@
     "test:openapi": "tsx demo/openapi-test.ts",
     "test:docs": "tsx demo/docs-test.ts",
     "test:hold-aging": "tsx demo/hold-aging-test.ts",
-    "test:policy-history": "tsx demo/policy-history-test.ts"
+    "test:policy-history": "tsx demo/policy-history-test.ts",
+    "test:funding": "tsx demo/funding-test.ts"
   },
-  "version": "0.35.0"
+  "version": "0.36.0"
 }

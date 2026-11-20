@@ -156,7 +156,10 @@ def build_tools(client: RvnApiClient) -> list:
         decision it WOULD get (ALLOW / REQUIRE_APPROVAL / DENY with reason
         codes) — without persisting anything, recording spend, touching the
         audit chain, or executing. op is issue, transfer, reissue, subasset,
-        or unique. Always simulate before acting when unsure."""
+        or unique. Balance-aware: a policy ALLOW the wallet cannot fund
+        comes back as DENY with INSUFFICIENT_ASSET_BALANCE /
+        INSUFFICIENT_RVN_BALANCE and a funding object. Always simulate
+        before acting when unsure."""
         try:
             return _dump(client.simulate_intent(op, asset_name, qty, destination))
         except RvnApiError as err:

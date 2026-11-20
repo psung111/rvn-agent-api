@@ -59,7 +59,7 @@ verifies clean.
 | POST | `/v1/assets/transfer` | transfer an asset (policy-gated) |
 | GET | `/v1/assets?pattern=` | list assets |
 | GET | `/v1/assets/:name` | asset details |
-| POST | `/v1/intents/simulate` | dry-run an issue/reissue/transfer through policy — no side effects |
+| POST | `/v1/intents/simulate` | dry-run an issue/reissue/transfer through policy — no side effects; balance-aware (a policy ALLOW the wallet cannot fund DENYs with `INSUFFICIENT_ASSET_BALANCE` / `INSUFFICIENT_RVN_BALANCE`, with a `funding` object carrying the requirement and the balance seen) |
 | POST | `/v1/intents/:id/approve` | approve a held intent (body: optional `approver` label; a quorum hold returns 202 with `approvalsReceived`/`approvalsRequired` until N distinct approvers have approved, then executes; when the hold carries a roster (`quorumApprovers`, M identities) only roster members count — anyone else gets 403) |
 | POST | `/v1/intents/:id/deny` | deny a held intent (any single approver ends the hold) |
 | GET | `/v1/intents/pending` | intents awaiting approval |
@@ -100,6 +100,28 @@ asserts the docs page lists every spec operation. The MCP server
 (`get_openapi` and `get_docs` tools) and the LangChain client
 (`get_openapi()` and `get_docs()`) expose the
 same document, so agents can fetch the contract through either adapter.
+
+## Balance-aware simulate
+
+`POST /v1/intents/simulate` answers the policy question — and the funding
+question. When the policy decision is ALLOW, the wallet balance is checked
+too (read-only node lookups): a transfer needs the wallet to hold at least
+the qty of the asset; a supply-creating op needs enough RVN for the
+Ravencoin issuance fee (issue 500 RVN, reissue 100 RVN, sub-asset 100 RVN,
+unique asset 5 RVN — consensus fees, not policy). An ALLOW the wallet
+cannot fund comes back as DENY with `INSUFFICIENT_ASSET_BALANCE` /
+`INSUFFICIENT_RVN_BALANCE`, and the `funding` object carries the
+requirement (`asset`, `requiredBaseUnits`), the balance seen
+(`balanceBaseUnits`, null when the wallet holds none of the asset), and
+whether it funded — so agents stop submitting doomed intents. A policy
+DENY or hold is reported as-is and carries no `funding` object (the check
+runs only on ALLOW), and a node that cannot answer leaves the ALLOW
+untouched (`funded: null`). The variable per-transaction miner fee is not
+checked. On the mock node the wallet starts at 1,000,000 RVN (override
+with `MOCK_RVN_BALANCE_BASE_UNITS`, base units) and the issuance fee is
+debited on every real issue/reissue/sub-asset/unique call, so the check
+and the execution agree; on a real node the balances come from
+`listmyassets` / `getbalance`.
 
 ## API-key authentication
 

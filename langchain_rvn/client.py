@@ -283,7 +283,12 @@ class RvnApiClient:
 
         ``op`` is one of ``issue`` | ``transfer`` | ``reissue`` |
         ``subasset`` | ``unique``. The returned decision id is namespaced
-        ``sim-`` and can never be approved or denied.
+        ``sim-`` and can never be approved or denied. Balance-aware: a
+        policy ALLOW the wallet cannot fund (asset balance too low for a
+        transfer, or too little RVN for the issuance fee) comes back as
+        DENY with INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE,
+        with a ``funding`` object carrying the requirement and the balance
+        seen.
         """
         return self._call(
             "POST",

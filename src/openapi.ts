@@ -31,6 +31,9 @@ export const REASON_CODES = [
   'ISSUE_CAP_EXCEEDED',
   'DAILY_ISSUE_BUDGET_EXCEEDED',
   'TRANSFER_CAP_EXCEEDED',
+  // DENY (funding — simulate only, when a policy ALLOW cannot be paid for)
+  'INSUFFICIENT_ASSET_BALANCE',
+  'INSUFFICIENT_RVN_BALANCE',
   // DENY from the server gates (not the evaluator)
   'RATE_LIMIT_EXCEEDED',
   // Approval-path outcomes, recorded on the resolved decision
@@ -42,7 +45,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.35.0',
+    version: '0.36.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -405,7 +408,13 @@ export const openApiDocument = {
           'codes — without persisting the intent, recording issue spend, touching the audit chain, ' +
           'notifying approvers, executing anything, or spending a rate-limit token. The returned ' +
           'decision id is `sim-<uuid>` and refers to nothing stored: approving it 404s. Field ' +
-          'aliases `name` / `toAddress` are accepted; for op `unique` the qty is normalized to "1".',
+          'aliases `name` / `toAddress` are accepted; for op `unique` the qty is normalized to "1". ' +
+          'Balance-aware: when the policy decision is ALLOW, the wallet balance is checked too ' +
+          '(read-only) — a transfer needs the wallet to hold the qty, a supply-creating op needs ' +
+          'enough RVN for the issuance fee — and an ALLOW the wallet cannot fund is reported as ' +
+          'DENY with INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE, with the `funding` ' +
+          'object carrying the requirement and the balance seen. A policy DENY or hold carries no ' +
+          '`funding` object.',
         requestBody: {
           required: true,
           content: {
@@ -437,6 +446,21 @@ export const openApiDocument = {
                   properties: {
                     simulated: { type: 'boolean', const: true },
                     decision: { $ref: '#/components/schemas/Decision' },
+                    funding: {
+                      type: 'object',
+                      description:
+                        'Present only when the policy decision was ALLOW: the funding check that ran ' +
+                        'against the wallet (read-only). `funded: false` flips the decision to DENY; ' +
+                        '`funded: null` means the node could not answer and the ALLOW stands.',
+                      properties: {
+                        asset: { type: 'string', description: "Asset name, or 'RVN' when the requirement is the issuance fee." },
+                        requiredBaseUnits: { type: 'string', description: 'Required amount in base units (decimal string).' },
+                        balanceBaseUnits: { type: 'string', nullable: true, description: 'Wallet balance in base units, or null when unknown (asset not held, or node error).' },
+                        funded: { type: 'boolean', nullable: true, description: 'True when the wallet can fund the intent, false when it cannot, null when unknown.' },
+                        reasonCode: { type: 'string', enum: ['INSUFFICIENT_ASSET_BALANCE', 'INSUFFICIENT_RVN_BALANCE'] },
+                        error: { type: 'string', description: 'Node error message when the balance could not be read.' },
+                      },
+                    },
                     note: { type: 'string' },
                   },
                 },
@@ -1086,7 +1110,9 @@ export const openApiDocument = {
               'WITHIN_POLICY (ALLOW); DESTINATION_NOT_ALLOWLISTED / ABOVE_APPROVAL_THRESHOLD / ' +
               'ANOMALY_SUSPECTED / QUORUM_REQUIRED (holds); DESTINATION_BLOCKED / ASSET_NAME_REJECTED / ' +
               'NON_POSITIVE_QTY / ISSUE_CAP_EXCEEDED / DAILY_ISSUE_BUDGET_EXCEEDED / TRANSFER_CAP_EXCEEDED / ' +
-              'RATE_LIMIT_EXCEEDED (denies); DENIED_BY_OWNER / APPROVED (approval-path outcomes).',
+              'RATE_LIMIT_EXCEEDED / INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE (denies — ' +
+              'the last two are simulate-only, when a policy ALLOW cannot be funded); ' +
+              'DENIED_BY_OWNER / APPROVED (approval-path outcomes).',
           },
           decidedAtMs: { type: 'integer', description: 'Epoch ms when the decision was made.' },
           expiresAtMs: { type: 'integer', description: 'Epoch ms when the decision expires (decisionTtlSeconds after it was made).' },

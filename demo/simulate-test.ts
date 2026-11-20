@@ -9,6 +9,9 @@
  *     recorded, no audit entries, no approver notifications, nothing on node
  *   - a simulated decision id is not approvable (404)
  *   - invalid bodies return 400
+ *   - balance-aware (v0.36.0): a policy-ALLOW transfer of an asset the
+ *     wallet does not hold DENYs INSUFFICIENT_ASSET_BALANCE, and an
+ *     ALLOW response carries the funded balance report
  *
  * Nothing touches the network: the API is localhost-only.
  */
@@ -165,10 +168,24 @@ async function main() {
       (await lastSeq()) === seqBeforeHold);
 
     // --- 6. transfer op within policy ---
+    // REALCOIN1 was really issued above (600 held), so the wallet can fund
+    // a 100-unit transfer; SIMCOIN1 was never issued, so its simulation
+    // DENYs on funding instead (v0.36.0: balance-aware simulate).
     const s5 = await post('/v1/intents/simulate', {
-      op: 'transfer', agentId: AGENT, assetName: 'SIMCOIN1', qty: '100', destination: address,
+      op: 'transfer', agentId: AGENT, assetName: 'REALCOIN1', qty: '100', destination: address,
     });
     check('simulate transfer within policy -> ALLOW', s5.status === 200 && s5.json.decision?.kind === 'ALLOW');
+    check('transfer simulate reports the funded asset balance',
+      s5.json.funding?.asset === 'REALCOIN1' && s5.json.funding?.balanceBaseUnits === '600' &&
+      s5.json.funding?.funded === true, s5.json.funding);
+    const s5b = await post('/v1/intents/simulate', {
+      op: 'transfer', agentId: AGENT, assetName: 'SIMCOIN1', qty: '100', destination: address,
+    });
+    check('simulate transfer of a never-issued asset -> DENY INSUFFICIENT_ASSET_BALANCE',
+      s5b.status === 200 && s5b.json.decision?.kind === 'DENY' &&
+      s5b.json.decision?.reasonCodes?.includes('INSUFFICIENT_ASSET_BALANCE'), s5b.json.decision);
+    check('never-issued funding balance is null',
+      s5b.json.funding?.funded === false && s5b.json.funding?.balanceBaseUnits === null, s5b.json.funding);
 
     // --- 7. field aliases and bad asset name ---
     // Fresh agent so the earlier budget spend above doesn't interfere.

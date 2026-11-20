@@ -880,13 +880,87 @@ and logs the result in CHANGELOG.md.
   expectation, both now 0.35.0 / six migrations. The policy history
   + rollback item is complete; the next top item is balance-aware
   simulate.
-- [ ] **Balance-aware simulate** — `simulate` answers the policy
-  question but not the funding question: on the real node it should
-  also report whether the source wallet can fund the operation
-  (asset balance for a transfer, RVN for fees where applicable),
-  while the mock node answers from its in-memory ledger. A simulation
-  that would ALLOW on policy but fail on funds reports a distinct
-  reason code, so agents stop submitting doomed intents.
+- [x] 2026-11-20 — v0.36.0 Balance-aware simulate (item complete):
+  `simulate` now answers the funding question as well as the policy
+  question. New `src/policy/funding.ts` — the Ravencoin consensus
+  issuance fees in base units (issue 500 RVN, reissue 100 RVN,
+  sub-asset 100 RVN, unique 5 RVN), `fundingRequirementFor()` (a
+  transfer needs the wallet to hold qty of the asset; a supply-creating
+  op needs the RVN fee), read-only `checkFunding()` against the node,
+  and `applyFunding()` which flips a policy-ALLOW the wallet cannot
+  fund into a DENY carrying only `INSUFFICIENT_ASSET_BALANCE` /
+  `INSUFFICIENT_RVN_BALANCE`. The check runs only on ALLOW: a policy
+  DENY or hold is reported as-is with no `funding` object, and a node
+  that cannot answer leaves the ALLOW untouched (`funded: null`,
+  error carried) instead of failing the simulation. The response
+  carries the `funding` object (asset, requiredBaseUnits,
+  balanceBaseUnits — null when the wallet holds none of the asset —
+  funded, reasonCode) whenever the check ran. New `getAssetBalance` /
+  `getRvnBalance` seam on `RvnNode`: the mock sums its ledger balances
+  (its transfer can debit exactly that, so check and execution agree)
+  and holds a wallet RVN balance seeded from
+  `MOCK_RVN_BALANCE_BASE_UNITS` (default 1,000,000 RVN), debited by
+  the issuance fee on every real issue / reissue / sub-asset / unique
+  call — a failed call charges no fee, and a low-RVN mock refuses an
+  issue the same way the simulation predicts. The real client reads
+  `listmyassets` (verbose, with a plain-number fallback via
+  `getassetdata`) and `getbalance`, converting decimals to base units
+  with the new float-free `decimalToBaseUnits()` (which also expands
+  scientific notation — `String(1e-8)` — a bug the test caught before
+  landing). The variable miner fee is deliberately not checked. No new
+  route or tool: the MCP `simulate_intent` and LangChain
+  `simulate_intent` descriptions now name the funding verdict, and
+  the OpenAPI spec gained both reason codes plus the `funding` object
+  on the simulate response. Verified with new `pnpm test:funding`
+  (`demo/funding-test.ts`, 53 checks: fee constants, requirement
+  mapping, decimal conversion incl. the 1e-8 case, applyFunding flip
+  and TTL preservation, checkFunding against the mock incl. a throwing
+  node, mock fee debiting, and booted-API integrations — issue /
+  transfer / sub-asset / unique funding reports, over-balance and
+  never-issued transfers DENY, policy DENY / hold carry no funding
+  object, zero side effects, and a second low-RVN API proving an
+  issue DENYs at 500 vs 100 RVN while a unique ALLOWs at 5 RVN and a
+  reissue ALLOWs at exactly the balance, with a real issue failing
+  502 the same way); `demo/simulate-test.ts` updated (the transfer
+  ALLOW case now uses a really-issued asset; a never-issued transfer
+  DENYs on funding); demo, mcp-smoke, approvals,
+  telegram-callback, simulate, reissue, subasset, unique, presets,
+  anomaly, store, archive, migrations, partition, webhooks,
+  ratelimit, metrics, quorum, auth, mcp-auth, openapi, docs,
+  hold-aging, policy-history, langchain suites still green. The
+  balance-aware simulate item is complete.
+- [ ] **Funding gate on real submits** — a real submit that policy-ALLOWs
+  but the wallet cannot fund currently executes, fails at the node, and
+  lands as a 502 with an `EXECUTION_FAILED` audit entry. Run the same
+  funding check before execution and turn the doomed ALLOW into a DENY
+  (`INSUFFICIENT_ASSET_BALANCE` / `INSUFFICIENT_RVN_BALANCE`, audited
+  as a decision, nothing executed) so agents get a clean, auditable
+  refusal instead of an execution failure — and a hold that later
+  becomes unfundable is caught at approval time, not at the node.
+- [ ] **Wallet balances endpoint** — `GET /v1/wallet/balances`
+  (read-only): the wallet's RVN balance plus every asset balance it
+  holds, so an operator or monitoring agent can see what the wallet
+  can fund without simulating an intent for each asset. MCP +
+  LangChain adapters cover it like every other route.
+- [ ] **Miner-fee estimation in the funding check** — the v0.36.0 check
+  covers the issuance fee but not the variable per-transaction miner
+  fee. Ask the node (`estimatesmartfee`) for the current fee rate,
+  estimate the transaction size per op, and add it to the required
+  RVN — so a wallet with exactly the issuance fee but no room for the
+  miner fee no longer simulates as funded and then fails at execution.
+  Degrades to fee-only when the node cannot estimate.
+- [ ] **Mainnet guardrail** — "never touch mainnet" is a hard rule but
+  today it rests on the operator pointing the API at the right node.
+  Refuse to boot against a mainnet chain (`getblockchaininfo` chain
+  `main`) unless an explicit `RVN_ALLOW_MAINNET=true` is set, and
+  report the chain on `/v1/health`, so a misconfigured RPC URL fails
+  loudly at startup instead of moving real funds.
+- [ ] **Per-agent wallets** — the API has one node wallet shared by
+  every agent, so one agent's issue fee or transfer drains the same
+  balance every other agent simulates against. Give each agent its own
+  wallet address (derived from the node, tracked per agentId), so
+  funding checks and execution are per-agent and one agent cannot
+  spend another's funds.
 
 ## Done
 

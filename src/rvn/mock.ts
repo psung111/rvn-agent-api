@@ -1,16 +1,61 @@
 import { randomUUID } from 'node:crypto';
+import { ISSUANCE_FEE_BASE_UNITS, RVN_BASE_UNITS_PER_COIN } from '../policy/funding.js';
 import type { AssetInfo, ChainInfo, RvnNode } from './types.js';
+
+/**
+ * Default mock wallet RVN balance: 1,000,000 RVN — enough that the
+ * demo loop and the test suites never trip the issuance-fee check by
+ * accident. Override with MOCK_RVN_BALANCE_BASE_UNITS (base units, a
+ * decimal string); a malformed value falls back to the default, never
+ * a startup crash. The funding test sets it low on purpose to prove
+ * the fee DENY path.
+ */
+export const DEFAULT_MOCK_RVN_BALANCE_BASE_UNITS = 1_000_000n * RVN_BASE_UNITS_PER_COIN;
+
+function mockRvnBalanceFromEnv(): bigint {
+  const raw = process.env.MOCK_RVN_BALANCE_BASE_UNITS;
+  if (raw === undefined || raw === '') return DEFAULT_MOCK_RVN_BALANCE_BASE_UNITS;
+  try {
+    const parsed = BigInt(raw.trim());
+    return parsed >= 0n ? parsed : DEFAULT_MOCK_RVN_BALANCE_BASE_UNITS;
+  } catch {
+    return DEFAULT_MOCK_RVN_BALANCE_BASE_UNITS;
+  }
+}
 
 /**
  * In-memory Ravencoin node for development and demos. Implements the same
  * RvnNode interface as the real RPC client, so the API can't tell them apart.
  * No chain, no network, no funds — pure state machine.
+ *
+ * Wallet semantics (v0.36.0): the mock has no separate wallet — every
+ * balance the ledger records is treated as wallet-held, which is what
+ * makes the funding check agree with execution: a transfer succeeds iff
+ * the total issued balance covers it, and a supply-creating op succeeds
+ * iff the mock wallet can pay the issuance fee. The wallet's RVN
+ * balance starts at MOCK_RVN_BALANCE_BASE_UNITS (default 1,000,000 RVN)
+ * and is debited by the issuance fee on every issue / reissue /
+ * sub-asset / unique-asset call, so a simulation that says "funded"
+ * executes, and one that says "insufficient RVN" fails the same way
+ * for real.
  */
 export class MockRvnNode implements RvnNode {
   private assets = new Map<string, AssetInfo & { balances: Map<string, bigint> }>();
   private addresses = new Set<string>();
   private blocks = 3_100_000;
   private nextAddr = 1;
+  private rvnBalance = mockRvnBalanceFromEnv();
+
+  /** Debit the issuance fee, or throw exactly as ravend would when the wallet cannot pay it. */
+  private payIssuanceFee(kind: keyof typeof ISSUANCE_FEE_BASE_UNITS, op: string): void {
+    const fee = ISSUANCE_FEE_BASE_UNITS[kind];
+    if (this.rvnBalance < fee) {
+      throw new Error(
+        `insufficient RVN balance for ${op} fee (needs ${fee}, wallet holds ${this.rvnBalance})`,
+      );
+    }
+    this.rvnBalance -= fee;
+  }
 
   private addr(prefix = 'mtest'): string {
     // Not real addresses — clearly fake, which is the point in mock mode.
@@ -40,6 +85,10 @@ export class MockRvnNode implements RvnNode {
     if (!/^[A-Z0-9._]{3,30}$/.test(name)) throw new Error(`invalid asset name ${name}`);
     const qty = BigInt(opts.qty);
     if (qty <= 0n) throw new Error('qty must be positive');
+    // The issuance fee is paid only when the issue actually happens —
+    // a validation failure above throws before any fee is charged,
+    // exactly as a failed ravend RPC broadcasts no transaction.
+    this.payIssuanceFee('issue_asset', 'issue');
     this.addresses.add(opts.toAddress);
     this.assets.set(name, {
       name,
@@ -97,6 +146,7 @@ export class MockRvnNode implements RvnNode {
     }
     if (opts.newIpfsHash !== undefined) asset.ipfsHash = opts.newIpfsHash;
     if (opts.reissuable !== undefined) asset.reissuable = opts.reissuable;
+    this.payIssuanceFee('reissue_asset', 'reissue');
     this.addresses.add(opts.toAddress);
     asset.balances.set(opts.toAddress, (asset.balances.get(opts.toAddress) ?? 0n) + qty);
     asset.amount = String(BigInt(asset.amount) + qty);
@@ -124,6 +174,7 @@ export class MockRvnNode implements RvnNode {
     if (!this.assets.has(parent)) throw new Error(`unknown parent asset ${parent}`);
     const qty = BigInt(opts.qty);
     if (qty <= 0n) throw new Error('qty must be positive');
+    this.payIssuanceFee('issue_subasset', 'sub-asset issue');
     this.addresses.add(opts.toAddress);
     this.assets.set(name, {
       name,
@@ -155,6 +206,7 @@ export class MockRvnNode implements RvnNode {
     if (this.assets.has(name)) throw new Error(`asset ${name} already exists`);
     if (!this.assets.has(root)) throw new Error(`unknown root asset ${root}`);
     // A unique asset is a singleton: amount 1, units 0, never reissuable.
+    this.payIssuanceFee('issue_unique', 'unique-asset issue');
     this.addresses.add(opts.toAddress);
     this.assets.set(name, {
       name,
@@ -180,5 +232,20 @@ export class MockRvnNode implements RvnNode {
     if (!a) return null;
     const { balances: _b, ...info } = a;
     return info;
+  }
+
+  async getAssetBalance(assetName: string): Promise<string | null> {
+    const asset = this.assets.get(assetName.toUpperCase());
+    if (!asset) return null;
+    // The mock has no separate wallet: every balance the ledger records
+    // is wallet-held, so the total is the balance — and it is exactly
+    // what transferAsset can debit, so the check and the execution agree.
+    let total = 0n;
+    for (const bal of asset.balances.values()) total += bal;
+    return total.toString();
+  }
+
+  async getRvnBalance(): Promise<string> {
+    return this.rvnBalance.toString();
   }
 }

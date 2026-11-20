@@ -1,5 +1,81 @@
 # Changelog
 
+## 2026-11-20 — v0.36.0 (Balance-aware simulate, item complete)
+
+- Balance-aware simulate: `simulate` now answers the funding question
+  as well as the policy question. New `src/policy/funding.ts` — the
+  Ravencoin consensus issuance fees in base units (issue 500 RVN,
+  reissue 100 RVN, sub-asset 100 RVN, unique 5 RVN),
+  `fundingRequirementFor()` (a transfer needs the wallet to hold qty
+  of the asset; a supply-creating op needs the RVN fee), read-only
+  `checkFunding()` against the node, and `applyFunding()`, which flips
+  a policy-ALLOW the wallet cannot fund into a DENY carrying only
+  `INSUFFICIENT_ASSET_BALANCE` / `INSUFFICIENT_RVN_BALANCE`. The check
+  runs only on ALLOW: a policy DENY or hold is reported as-is with no
+  `funding` object, and a node that cannot answer leaves the ALLOW
+  untouched (`funded: null`, error carried) instead of failing the
+  simulation. The response carries the `funding` object (asset,
+  requiredBaseUnits, balanceBaseUnits — null when the wallet holds
+  none of the asset — funded, reasonCode) whenever the check ran.
+- New `getAssetBalance` / `getRvnBalance` seam on `RvnNode`. The mock
+  sums its ledger balances (its transfer can debit exactly that, so
+  check and execution agree) and holds a wallet RVN balance seeded
+  from `MOCK_RVN_BALANCE_BASE_UNITS` (default 1,000,000 RVN), debited
+  by the issuance fee on every real issue / reissue / sub-asset /
+  unique call — a failed call charges no fee, and a low-RVN mock
+  refuses an issue the same way the simulation predicts. The real
+  client reads `listmyassets` (verbose, with a plain-number fallback
+  via `getassetdata`) and `getbalance`, converting decimals to base
+  units with the new float-free `decimalToBaseUnits()`. The variable
+  miner fee is deliberately not checked.
+- No new route or tool: the MCP `simulate_intent` and LangChain
+  `simulate_intent` descriptions now name the funding verdict, and the
+  OpenAPI spec gained both reason codes plus the `funding` object on
+  the simulate response. `initialize` now reports server version
+  0.36.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README route table gained the
+  balance-aware note and a new "Balance-aware simulate" section.
+- New `pnpm test:funding` (`demo/funding-test.ts`, 53 checks): fee
+  constants, requirement mapping, decimal conversion, applyFunding
+  flip and TTL preservation, checkFunding against the mock incl. a
+  throwing node degrading to funded:null, mock fee debiting, and
+  booted-API integrations — issue / transfer / sub-asset / unique
+  funding reports, over-balance and never-issued transfers DENY,
+  policy DENY / hold carry no funding object, zero side effects, and
+  a second low-RVN API (100 RVN) proving an issue DENYs at 500 vs
+  100 RVN while a unique ALLOWs at 5 RVN and a reissue ALLOWs at
+  exactly the balance, with a real issue failing 502 the same way.
+  `demo/simulate-test.ts` updated (the transfer ALLOW case now uses
+  a really-issued asset; a never-issued transfer DENYs on funding).
+  `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`,
+  `pnpm test:hold-aging`, `pnpm test:policy-history`,
+  `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:funding` script. No
+  local Postgres on this VM, so the Postgres live legs were skipped
+  (as in recent sessions). The real-node `listmyassets` /
+  `getbalance` path is implemented against the documented RPC shapes
+  and is NOT verified against a live ravend (no live node here) — the
+  mock leg is what the suite exercises. One real bug caught by the
+  test before landing: `decimalToBaseUnits` rejected small RPC
+  amounts because `String(0.00000001)` is `'1e-8'` — the converter
+  now expands scientific notation before parsing.
+- The balance-aware simulate item is complete; the next top items are
+  the five newly appended backlog items (funding gate on real
+  submits, wallet balances endpoint, miner-fee estimation, mainnet
+  guardrail, per-agent wallets).
+
 ## 2026-11-19 — v0.35.0 (Policy history + rollback, item complete)
 
 - Policy history + rollback: a PUT or preset apply no longer loses the

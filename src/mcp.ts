@@ -180,7 +180,10 @@ const TOOLS: ToolDef[] = [
       'Dry-run an issue, reissue, or transfer through the policy engine (POST /v1/intents/simulate). ' +
       'Returns the decision the policy WOULD make — ALLOW, REQUIRE_APPROVAL, or DENY — without ' +
       'storing the intent, recording issue spend, appending to the audit chain, notifying ' +
-      'approvers, or executing anything. Use it to check an action before committing to it.',
+      'approvers, or executing anything. Balance-aware: a policy ALLOW the wallet cannot fund ' +
+      '(asset balance too low for a transfer, or too little RVN for the issuance fee) comes ' +
+      'back as DENY with INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE, with a `funding` ' +
+      'object carrying the requirement and the balance seen. Use it to check an action before committing to it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -710,7 +713,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.35.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.36.0' },
       });
     }
     case 'notifications/initialized':

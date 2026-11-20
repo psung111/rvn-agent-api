@@ -1,5 +1,6 @@
 export * from './types.js';
 export * from './anomaly.js';
+export * from './funding.js';
 export * from './history.js';
 export * from './quorum.js';
 export * from './ratelimit.js';

@@ -65,4 +65,14 @@ export interface RvnNode {
   }): Promise<string>; // txid
   listAssets(pattern?: string): Promise<AssetInfo[]>;
   getAssetData(name: string): Promise<AssetInfo | null>;
+  /**
+   * Wallet balances for the funding check behind simulate (v0.36.0).
+   * `getAssetBalance` is the wallet's holding of one asset in base
+   * units — null when the wallet holds none of it (unknown asset
+   * included). `getRvnBalance` is the wallet's RVN balance in base
+   * units (1 RVN = 10^8). Both are read-only: simulate calls them and
+   * never moves funds.
+   */
+  getAssetBalance(assetName: string): Promise<string | null>;
+  getRvnBalance(): Promise<string>;
 }

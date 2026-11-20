@@ -27,7 +27,9 @@ import {
 } from './auth/keys.js';
 import {
   anomalyConfigFromPolicy,
+  applyFunding,
   applyPreset,
+  checkFunding,
   createsSupply,
   defaultPolicy,
   detectAnomalies,
@@ -1034,6 +1036,16 @@ async function main() {
    * appending to the audit chain, notifying approvers, or executing anything.
    * The returned decision id refers to nothing stored — approving it 404s.
    *
+   * Balance-aware (v0.36.0): when the policy decision is ALLOW, the wallet
+   * balance is also checked (read-only node lookups — a transfer needs the
+   * wallet to hold qty of the asset, a supply-creating op needs enough RVN
+   * for the issuance fee). An ALLOW the wallet cannot fund is reported as
+   * DENY with INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE, and
+   * the `funding` object carries the requirement and the balance seen, so
+   * agents stop submitting doomed intents. A policy DENY or hold is
+   * reported as-is — the funding check runs only on ALLOW — and a node
+   * that cannot answer leaves the ALLOW untouched (`funded: null`).
+   *
    * Body: { op: 'issue'|'transfer'|'reissue'|'subasset'|'unique', agentId?,
    *         assetName|name, qty, destination|toAddress }. Quantities are
    * base-unit decimal strings, like the rest of the API. Reissue,
@@ -1110,10 +1122,23 @@ async function main() {
       simNow,
       await store.intents.history(intent.agentId),
     );
+    // Balance-aware (v0.36.0): a policy ALLOW the wallet cannot fund is
+    // a DENY, not an ALLOW — checked here, after the policy engine, so
+    // the funding verdict never masks a policy DENY or hold, and only
+    // with read-only balance lookups (no state moves anywhere).
+    if (decision.kind !== 'ALLOW') {
+      return {
+        simulated: true,
+        decision,
+        note: 'dry run — no intent stored, no spend recorded, no audit entry, nothing executed',
+      };
+    }
+    const funding = await checkFunding(intent, node);
     return {
       simulated: true,
-      decision,
-      note: 'dry run — no intent stored, no spend recorded, no audit entry, nothing executed',
+      decision: applyFunding(decision, funding),
+      funding,
+      note: 'dry run — no intent stored, no spend recorded, no audit entry, nothing executed; wallet balance checked (read-only)',
     };
   });
 

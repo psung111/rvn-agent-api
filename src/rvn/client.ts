@@ -7,6 +7,35 @@ export interface RpcConfig {
 }
 
 /**
+ * Convert a ravend decimal amount (RVN, or an asset amount in display
+ * units) to base units without ever going through a float: the RPC
+ * returns JSON numbers, so parse the decimal string digit by digit.
+ * `decimals` is the asset's units (8 for RVN). Extra precision beyond
+ * `decimals` places is truncated — ravend never returns more than the
+ * asset's own precision.
+ */
+export function decimalToBaseUnits(value: number | string, decimals: number): string {
+  let text = String(value).trim();
+  // Expand scientific notation first: String(0.00000001) is '1e-8', and
+  // a small getbalance can arrive the same way after JSON parsing.
+  const expMatch = text.match(/^(\d+(?:\.\d+)?)[eE]([+-]?\d+)$/);
+  if (expMatch) {
+    const [, mantissa, expStr] = expMatch;
+    const exp = Number(expStr);
+    const [whole, frac = ''] = mantissa.split('.');
+    const digits = whole + frac;
+    const point = whole.length + exp; // decimal-point position within digits
+    if (point <= 0) text = '0.' + '0'.repeat(-point) + digits;
+    else if (point >= digits.length) text = digits + '0'.repeat(point - digits.length);
+    else text = digits.slice(0, point) + '.' + digits.slice(point);
+  }
+  if (!/^\d+(\.\d+)?$/.test(text)) throw new Error(`not a non-negative decimal: ${text}`);
+  const [whole, frac = ''] = text.split('.');
+  const padded = (frac + '0'.repeat(decimals)).slice(0, decimals);
+  return (BigInt(whole) * 10n ** BigInt(decimals) + BigInt(padded || '0')).toString();
+}
+
+/**
  * Thin JSON-RPC client for ravend.
  *
  * RPC shapes follow the Ravencoin asset RPCs (issue / transfer / listassets /
@@ -147,5 +176,38 @@ export class RvnRpcClient implements RvnNode {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Wallet balance of one asset, in base units — null when the wallet
+   * holds none of it. `listmyassets` lists only wallet-owned assets, so
+   * an absent entry means "not held", not "unknown". The verbose form
+   * returns per-asset objects with amount (display units) and units;
+   * a plain-number shape falls back to `getassetdata` for the units.
+   * NOTE: this path is implemented against the documented RPC shapes
+   * and is not verified against a live ravend on this VM (no live node
+   * here) — the mock leg is what the test suite exercises.
+   */
+  async getAssetBalance(assetName: string): Promise<string | null> {
+    const name = assetName.toUpperCase();
+    const raw = await this.call<Record<
+      string,
+      number | { amount: number; units: number }
+    > | null>('listmyassets', [name, true]);
+    if (!raw) return null;
+    const entry = raw[name];
+    if (entry === undefined) return null;
+    if (typeof entry === 'number') {
+      const data = await this.getAssetData(name);
+      if (!data) return null;
+      return decimalToBaseUnits(entry, data.units);
+    }
+    return decimalToBaseUnits(entry.amount, entry.units);
+  }
+
+  /** Wallet RVN balance in base units (1 RVN = 10^8), via `getbalance`. */
+  async getRvnBalance(): Promise<string> {
+    const balance = await this.call<number>('getbalance');
+    return decimalToBaseUnits(balance, 8);
   }
 }
