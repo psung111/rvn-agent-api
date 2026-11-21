@@ -48,6 +48,7 @@ import {
   validateRateLimitKindFields,
   type AnomalySignal,
   type Decision,
+  type FundingCheck,
   type PolicyReplacementSource,
   type RateLimitConfig,
   type RvnIntent,
@@ -597,6 +598,26 @@ async function main() {
       await deliverWebhook('intent.denied', intent, { decision: fresh });
       return { status: 403, body: { error: 'denied on re-evaluation', decision: fresh } };
     }
+    // Funding gate at approval time (v0.37.0): a hold that became
+    // unfundable while it waited — fees paid by other issues, assets
+    // moved — is caught here, not at the node. Same DENY shape as the
+    // submit gate (only the funding reason code), audited as a decision
+    // with atApproval: true, so the hold ends as a clean refusal instead
+    // of a 502 + EXECUTION_FAILED. A node that cannot answer (funded:
+    // null) leaves the approval untouched and execution is attempted.
+    const funding = await checkFunding(intent, node);
+    if (funding.funded === false) {
+      const denied = applyFunding(fresh, funding);
+      await store.audit.append('DECISION', intent.id, intent.agentId, {
+        kind: 'DENY', reasonCodes: denied.reasonCodes, atApproval: true,
+      });
+      await store.intents.putDecision(id, denied);
+      await deliverWebhook('intent.denied', intent, { decision: denied });
+      return {
+        status: 403,
+        body: { error: 'denied on funding check at approval time', decision: denied, funding },
+      };
+    }
     try {
       const txid = await executeIntent(intent);
       if (createsSupply(intent.kind)) {
@@ -673,7 +694,23 @@ async function main() {
     // baseline is the agent's prior intents only — the current intent
     // never flags itself.
     const history = await store.intents.history(intent.agentId);
-    const decision = await evaluateIntent(intent, policy, store.ledger, nowMs, history);
+    let decision = await evaluateIntent(intent, policy, store.ledger, nowMs, history);
+    // Funding gate (v0.37.0): the same check simulate runs (v0.36.0),
+    // now on the real path — a policy ALLOW the wallet cannot fund
+    // becomes a DENY (INSUFFICIENT_ASSET_BALANCE /
+    // INSUFFICIENT_RVN_BALANCE, with the funding object in the 403
+    // body) instead of an execution attempt that fails at the node with
+    // a 502 + EXECUTION_FAILED. The gate runs only on ALLOW, so a policy
+    // DENY or hold is reported exactly as evaluated, and a node that
+    // cannot answer (funded: null) leaves the ALLOW untouched — the
+    // execution itself is the fallback verdict, as before. The gate runs
+    // before the decision is stored and audited, so the audit trail
+    // carries one DECISION entry with the final verdict.
+    let funding: FundingCheck | undefined;
+    if (decision.kind === 'ALLOW') {
+      funding = await checkFunding(intent, node);
+      decision = applyFunding(decision, funding);
+    }
     await store.intents.putIntent(intent);
     await store.intents.putDecision(intent.id, decision);
     await store.audit.append('DECISION', intent.id, intent.agentId, {
@@ -721,7 +758,13 @@ async function main() {
         message: 'held for human approval — POST /v1/intents/:id/approve',
       });
     }
-    return reply.code(403).send({ intent, decision });
+    return reply.code(403).send({
+      intent,
+      decision,
+      // Present only when the funding gate flipped the ALLOW: the
+      // requirement and the balance seen, so the agent knows why.
+      ...(funding !== undefined ? { funding } : {}),
+    });
   };
 
   app.get('/v1/health', async () => {

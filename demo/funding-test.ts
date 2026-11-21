@@ -23,8 +23,9 @@
  *     no asset created)
  *   - a second API with MOCK_RVN_BALANCE_BASE_UNITS=100 RVN DENYs an
  *     issue (500 RVN fee), ALLOWs a unique (5 RVN) and a reissue at
- *     exactly the balance (100 RVN), and a real issue against it fails
- *     with 502 and creates no asset — the check and the execution agree.
+ *     exactly the balance (100 RVN), and a real issue against it is
+ *     refused by the funding gate with 403 (v0.37.0 — no longer a 502
+ *     from the node) and creates no asset.
  *
  * Nothing touches the network: the API is localhost-only.
  */
@@ -382,14 +383,27 @@ async function main() {
       simReissuePoor.json.funding?.balanceBaseUnits === '10000000000' &&
       simReissuePoor.json.funding?.requiredBaseUnits === '10000000000' &&
       simReissuePoor.json.funding?.funded === true, simReissuePoor.json);
-    // The check and the execution agree: a real issue fails the same way.
+    // The check and the execution agree — and since v0.37.0 the funding
+    // gate refuses the doomed submit outright instead of letting it fail
+    // at the node: a 403 DENY with the funding reason code, no asset,
+    // and no EXECUTION_FAILED audit entry.
     const realPoor = await req2.post('/v1/assets/issue', {
       agentId: AGENT, name: 'POORNEW', qty: '10', toAddress: address,
     });
-    check('low-RVN real issue fails with 502 (insufficient RVN)',
-      realPoor.status === 502 && /insufficient RVN/.test(realPoor.json?.error ?? ''), realPoor.json);
+    check('low-RVN real issue is refused by the funding gate (403, not 502)',
+      realPoor.status === 403 && realPoor.json?.decision?.kind === 'DENY' &&
+      realPoor.json?.decision?.reasonCodes?.includes('INSUFFICIENT_RVN_BALANCE') &&
+      realPoor.json?.funding?.funded === false, realPoor.json);
     const noAsset = await fetch(`${API2}/v1/assets/POORNEW`);
     check('failed low-RVN issue created no asset', noAsset.status === 404);
+    const tail2 = await req2.get('/v1/audit?limit=50');
+    const entries2 = tail2.entries as any[];
+    check('no EXECUTION_FAILED entry for the gated issue',
+      !entries2.some((e) => e.kind === 'EXECUTION_FAILED' && e.intentId === realPoor.json?.intent?.id), entries2.map((e) => e.kind));
+    check('the gated issue was audited as a DECISION with the funding reason code',
+      entries2.some((e) => e.kind === 'DECISION' && e.intentId === realPoor.json?.intent?.id &&
+        (e.detail?.reasonCodes as string[])?.includes('INSUFFICIENT_RVN_BALANCE')),
+      entries2.filter((e) => e.intentId === realPoor.json?.intent?.id));
   } finally {
     api2.kill();
   }

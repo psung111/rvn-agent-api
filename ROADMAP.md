@@ -929,14 +929,41 @@ and logs the result in CHANGELOG.md.
   ratelimit, metrics, quorum, auth, mcp-auth, openapi, docs,
   hold-aging, policy-history, langchain suites still green. The
   balance-aware simulate item is complete.
-- [ ] **Funding gate on real submits** — a real submit that policy-ALLOWs
-  but the wallet cannot fund currently executes, fails at the node, and
-  lands as a 502 with an `EXECUTION_FAILED` audit entry. Run the same
-  funding check before execution and turn the doomed ALLOW into a DENY
-  (`INSUFFICIENT_ASSET_BALANCE` / `INSUFFICIENT_RVN_BALANCE`, audited
-  as a decision, nothing executed) so agents get a clean, auditable
-  refusal instead of an execution failure — and a hold that later
-  becomes unfundable is caught at approval time, not at the node.
+- [x] 2026-11-21 — v0.37.0 Funding gate on real submits (item complete):
+  the v0.36.0 funding check ran in simulate only, so a real submit that
+  policy-ALLOWed but the wallet could not fund went to the node, failed
+  there, and landed as a 502 with an `EXECUTION_FAILED` audit entry. The
+  gate now runs the same `checkFunding`/`applyFunding` check on the real
+  path, in both places execution can happen. In `submit()`, a policy
+  ALLOW is checked before the decision is stored and audited, so a
+  doomed submit becomes a DENY carrying only `INSUFFICIENT_ASSET_BALANCE`
+  / `INSUFFICIENT_RVN_BALANCE` (403, with the `funding` object in the
+  body) — one `DECISION` audit entry with the final verdict, nothing
+  executed, no `EXECUTION_FAILED`. A policy DENY or hold is reported
+  exactly as evaluated, and a node that cannot answer (`funded: null`)
+  leaves the ALLOW untouched, so execution itself stays the fallback
+  verdict. In `resolveApproval()`, a hold that became unfundable while
+  it waited is caught after re-evaluation and before execution — 403
+  with the funding DENY, audited as a `DECISION` with `atApproval:
+  true`, webhook `intent.denied`, and the hold ends instead of failing
+  at the node. Adapters keep the "cover every route" invariant with no
+  new tool: the MCP / LangChain submit and approve descriptions now
+  name the gate, and the OpenAPI spec's issue and approve descriptions
+  do too (the transfer route already defers to issue's status codes).
+  Verified with new `pnpm test:funding-gate` (`demo/funding-gate-test.ts`,
+  27 checks: funded issue/transfer/sub-asset/unique still execute, an
+  over-balance and a never-issued transfer 403 with the funding object,
+  debit nothing, and are audited as decisions with no
+  `EXECUTION_FAILED`, a funded hold still approves and executes, and on
+  a 100 RVN wallet a held issue is refused at approval time with the
+  funding DENY audited `atApproval: true`), plus the updated
+  `pnpm test:funding` (the low-RVN real issue now expects the 403 gate
+  refusal instead of the old 502); demo, mcp-smoke, approvals,
+  telegram-callback, simulate, reissue, subasset, unique, presets,
+  anomaly, store, archive, migrations, partition, webhooks, ratelimit,
+  metrics, quorum, auth, mcp-auth, openapi, docs, hold-aging,
+  policy-history, langchain suites still green. The funding-gate item is
+  complete; the next top item is the wallet balances endpoint.
 - [ ] **Wallet balances endpoint** — `GET /v1/wallet/balances`
   (read-only): the wallet's RVN balance plus every asset balance it
   holds, so an operator or monitoring agent can see what the wallet

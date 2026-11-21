@@ -31,7 +31,7 @@ export const REASON_CODES = [
   'ISSUE_CAP_EXCEEDED',
   'DAILY_ISSUE_BUDGET_EXCEEDED',
   'TRANSFER_CAP_EXCEEDED',
-  // DENY (funding — simulate only, when a policy ALLOW cannot be paid for)
+  // DENY (funding — simulate, real submits, and approval time, when a policy ALLOW cannot be paid for)
   'INSUFFICIENT_ASSET_BALANCE',
   'INSUFFICIENT_RVN_BALANCE',
   // DENY from the server gates (not the evaluator)
@@ -45,7 +45,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.36.0',
+    version: '0.37.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -163,7 +163,10 @@ export const openApiDocument = {
         description:
           'Policy-gated like every submit. ALLOW executes immediately (200 + txid); ' +
           'REQUIRE_APPROVAL holds for a human (202); DENY returns 403; an exhausted ' +
-          'rate-limit bucket returns 429 with a DENY decision; a node failure returns 502.',
+          'rate-limit bucket returns 429 with a DENY decision; a node failure returns 502. ' +
+          'Funding gate (v0.37.0): a policy ALLOW the wallet cannot fund is refused ' +
+          'before execution (403 DENY with INSUFFICIENT_ASSET_BALANCE / ' +
+          'INSUFFICIENT_RVN_BALANCE and a `funding` object) instead of failing at the node.',
         requestBody: {
           required: true,
           content: {
@@ -479,7 +482,10 @@ export const openApiDocument = {
         summary: 'Approve a held intent',
         description:
           'Executes the held intent (re-evaluated against the current policy first — a re-evaluation ' +
-          'DENY returns 403 and ends the hold). A quorum hold returns 202 with `approvalsReceived` / ' +
+          'DENY returns 403 and ends the hold). A hold that became unfundable while it waited is ' +
+          'refused at approval time (403 DENY with INSUFFICIENT_ASSET_BALANCE / ' +
+          'INSUFFICIENT_RVN_BALANCE and a `funding` object) instead of failing at the node. ' +
+          'A quorum hold returns 202 with `approvalsReceived` / ' +
           '`approvalsRequired` until N distinct approvers have approved, then executes on the Nth; ' +
           'the same approver approving twice counts once (202, `alreadyCounted: true`); a non-roster ' +
           'approver gets 403. A deny by any single approver ends the hold outright.',

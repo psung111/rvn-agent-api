@@ -123,6 +123,14 @@ debited on every real issue/reissue/sub-asset/unique call, so the check
 and the execution agree; on a real node the balances come from
 `listmyassets` / `getbalance`.
 
+The same check also gates real submits: a policy ALLOW the wallet cannot
+fund is refused before execution (403 DENY with the funding reason code
+and the `funding` object in the body, audited as a `DECISION` — nothing
+executed, no `EXECUTION_FAILED` entry) instead of failing at the node
+with a 502. A hold that became unfundable while it waited is caught the
+same way at approval time: approving it returns 403 with the funding
+DENY, audited as a decision with `atApproval: true`, and the hold ends.
+
 ## API-key authentication
 
 The REST surface is unauthenticated by default (the localhost demo posture).

@@ -59,7 +59,9 @@ def build_tools(client: RvnApiClient) -> list:
         """Issue a new Ravencoin root asset, policy-gated. qty is a base-unit
         decimal string (whole units at units=0). Returns the intent and its
         decision: ALLOW (with txid), REQUIRE_APPROVAL (held intent id), or
-        DENY with reason codes."""
+        DENY with reason codes. Funding gate: a policy ALLOW the wallet
+        cannot fund (too little RVN for the 500 RVN issuance fee) comes back
+        as DENY with INSUFFICIENT_RVN_BALANCE instead of executing."""
         try:
             return _dump(
                 client.issue_asset(name, qty, to_address, units, reissuable, ipfs_hash)
@@ -78,7 +80,9 @@ def build_tools(client: RvnApiClient) -> list:
     ) -> str:
         """Reissue an existing reissuable asset, growing its supply.
         Policy-gated exactly like an issue. new_ipfs_hash requires new_units
-        (ravend params are positional)."""
+        (ravend params are positional). Funding gate: a policy ALLOW the
+        wallet cannot fund (too little RVN for the 100 RVN fee) comes back
+        as DENY with INSUFFICIENT_RVN_BALANCE instead of executing."""
         try:
             return _dump(
                 client.reissue_asset(
@@ -99,7 +103,9 @@ def build_tools(client: RvnApiClient) -> list:
     ) -> str:
         """Issue a sub-asset under an existing parent (name like
         PARENT/CHILD, nested PARENT/CHILD/GRAND works). Policy-gated exactly
-        like an issue; the parent must exist."""
+        like an issue; the parent must exist. Funding gate: a policy ALLOW
+        the wallet cannot fund (too little RVN for the 100 RVN fee) comes
+        back as DENY with INSUFFICIENT_RVN_BALANCE instead of executing."""
         try:
             return _dump(
                 client.issue_subasset(name, qty, to_address, units, reissuable, ipfs_hash)
@@ -115,7 +121,9 @@ def build_tools(client: RvnApiClient) -> list:
     ) -> str:
         """Issue a unique asset (Ravencoin NFT) named ROOT#TAG under an
         existing root. Singletons: qty is always 1, units 0, never
-        reissuable."""
+        reissuable. Funding gate: a policy ALLOW the wallet cannot fund
+        (too little RVN for the 5 RVN fee) comes back as DENY with
+        INSUFFICIENT_RVN_BALANCE instead of executing."""
         try:
             return _dump(client.issue_unique(name, to_address, ipfs_hash))
         except RvnApiError as err:
@@ -124,7 +132,10 @@ def build_tools(client: RvnApiClient) -> list:
     @tool
     def transfer_asset(asset_name: str, qty: str, destination: str) -> str:
         """Transfer an asset to a destination address, policy-gated. qty is
-        a base-unit decimal string. Returns the intent and its decision."""
+        a base-unit decimal string. Returns the intent and its decision.
+        Funding gate: a policy ALLOW for more of the asset than the wallet
+        holds comes back as DENY with INSUFFICIENT_ASSET_BALANCE instead of
+        executing."""
         try:
             return _dump(client.transfer_asset(asset_name, qty, destination))
         except RvnApiError as err:
@@ -168,7 +179,10 @@ def build_tools(client: RvnApiClient) -> list:
     @tool
     def approve_intent(intent_id: str, approver: str = "human") -> str:
         """Approve a held intent. The intent executes on the node (unless
-        re-evaluation denies it) and returns its txid. Only call this after
+        re-evaluation denies it) and returns its txid. A hold that became
+        unfundable while it waited is refused at approval time with DENY
+        and INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE instead
+        of failing at the node. Only call this after
         a human has approved the hold — it moves real funds/supply. For a
         quorum hold, one approval returns the progress
         (approvalsReceived/approvalsRequired, plus approversTotal when a

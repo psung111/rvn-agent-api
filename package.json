@@ -44,7 +44,8 @@
     "test:docs": "tsx demo/docs-test.ts",
     "test:hold-aging": "tsx demo/hold-aging-test.ts",
     "test:policy-history": "tsx demo/policy-history-test.ts",
-    "test:funding": "tsx demo/funding-test.ts"
+    "test:funding": "tsx demo/funding-test.ts",
+    "test:funding-gate": "tsx demo/funding-gate-test.ts"
   },
-  "version": "0.36.0"
+  "version": "0.37.0"
 }

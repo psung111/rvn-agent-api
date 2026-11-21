@@ -80,7 +80,7 @@ const TOOLS: ToolDef[] = [
   {
     name: 'issue_asset',
     description:
-      'Issue a new Ravencoin asset through the policy engine. Returns the policy decision (ALLOW/DENY/REQUIRE_APPROVAL) and, when executed, the txid. Nothing touches chain: the node is a mock unless RVN is wired live.',
+      'Issue a new Ravencoin asset through the policy engine. Returns the policy decision (ALLOW/DENY/REQUIRE_APPROVAL) and, when executed, the txid. Nothing touches chain: the node is a mock unless RVN is wired live. Funding gate: a policy ALLOW the wallet cannot fund (too little RVN for the 500 RVN issuance fee) is refused with a 403 DENY (INSUFFICIENT_RVN_BALANCE) instead of executing.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -102,7 +102,9 @@ const TOOLS: ToolDef[] = [
       '(POST /v1/assets/issue-subasset). The name is PARENT/SUB (nested PARENT/CHILD/GRAND works ' +
       'when the immediate parent exists); policy treats it like an issue — same per-op cap, 24h ' +
       'issue budget, approval threshold, and destination allowlist — with the asset-name pattern ' +
-      'applied to every slash-separated segment. Fails on an unknown parent asset.',
+      'applied to every slash-separated segment. Fails on an unknown parent asset. Funding gate: ' +
+      'a policy ALLOW the wallet cannot fund (too little RVN for the 100 RVN fee) is refused ' +
+      'with a 403 DENY (INSUFFICIENT_RVN_BALANCE) instead of executing.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -125,7 +127,9 @@ const TOOLS: ToolDef[] = [
       'e.g. ART/DAVINCI#MONALISA); policy treats it like an issue — same per-op cap, 24h ' +
       'issue budget, approval threshold, and destination allowlist — with the asset-name pattern ' +
       'applied to the root and the tag checked separately. A unique asset is a singleton ' +
-      '(amount 1, units 0, never reissuable), so qty is fixed at 1. Fails on an unknown root asset.',
+      '(amount 1, units 0, never reissuable), so qty is fixed at 1. Fails on an unknown root asset. ' +
+      'Funding gate: a policy ALLOW the wallet cannot fund (too little RVN for the 5 RVN fee) ' +
+      'is refused with a 403 DENY (INSUFFICIENT_RVN_BALANCE) instead of executing.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -144,7 +148,9 @@ const TOOLS: ToolDef[] = [
       'Reissue additional supply of an existing reissuable Ravencoin asset through the policy engine ' +
       '(POST /v1/assets/reissue). Policy treats a reissue like an issue: same per-op cap, 24h issue ' +
       'budget, approval threshold, destination allowlist, and asset-name pattern. Returns the policy ' +
-      'decision and, when executed, the txid. Fails on a non-reissuable or unknown asset.',
+      'decision and, when executed, the txid. Fails on a non-reissuable or unknown asset. Funding gate: ' +
+      'a policy ALLOW the wallet cannot fund (too little RVN for the 100 RVN fee) is refused with a ' +
+      '403 DENY (INSUFFICIENT_RVN_BALANCE) instead of executing.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -162,7 +168,9 @@ const TOOLS: ToolDef[] = [
   {
     name: 'transfer_asset',
     description:
-      'Transfer an existing Ravencoin asset through the policy engine. Returns the policy decision and, when executed, the txid.',
+      'Transfer an existing Ravencoin asset through the policy engine. Returns the policy decision and, when executed, the txid. ' +
+      'Funding gate: a policy ALLOW for more of the asset than the wallet holds is refused with a 403 DENY ' +
+      '(INSUFFICIENT_ASSET_BALANCE) instead of executing.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -203,7 +211,10 @@ const TOOLS: ToolDef[] = [
     description:
       'Approve a held REQUIRE_APPROVAL intent (POST /v1/intents/:id/approve). ' +
       'The API re-evaluates policy at approval time; a DENY on re-evaluation ' +
-      'or an expired decision returns an error. Returns the execution txid on success. ' +
+      'or an expired decision returns an error. A hold that became unfundable ' +
+      'while it waited is refused at approval time (403 DENY with ' +
+      'INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE) instead of ' +
+      'failing at the node. Returns the execution txid on success. ' +
       'For a quorum hold (decision quorumRequired N), one approval returns 202 with ' +
       'approvalsReceived/approvalsRequired until N distinct approvers have approved — ' +
       'the same approver twice counts once — and only the Nth executes. ' +
@@ -713,7 +724,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.36.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.37.0' },
       });
     }
     case 'notifications/initialized':

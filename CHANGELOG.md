@@ -1,5 +1,67 @@
 # Changelog
 
+## 2026-11-21 — v0.37.0 (Funding gate on real submits, item complete)
+
+- Funding gate on real submits: the v0.36.0 funding check lived in
+  simulate only, so a real submit that policy-ALLOWed but the wallet
+  could not fund went to the node, failed there, and landed as a 502
+  with an `EXECUTION_FAILED` audit entry. The gate now runs the same
+  `checkFunding` / `applyFunding` check on the real path, in both
+  places execution can happen. In `submit()`, a policy ALLOW is
+  checked before the decision is stored and audited, so a doomed
+  submit becomes a DENY carrying only `INSUFFICIENT_ASSET_BALANCE` /
+  `INSUFFICIENT_RVN_BALANCE` (403, with the `funding` object in the
+  body) — one `DECISION` audit entry with the final verdict, nothing
+  executed, no `EXECUTION_FAILED`. A policy DENY or hold is reported
+  exactly as evaluated, and a node that cannot answer (`funded: null`)
+  leaves the ALLOW untouched, so execution itself stays the fallback
+  verdict. In `resolveApproval()`, a hold that became unfundable while
+  it waited is caught after re-evaluation and before execution — 403
+  with the funding DENY, audited as a `DECISION` with `atApproval:
+  true`, webhook `intent.denied`, and the hold ends instead of failing
+  at the node.
+- No new route or tool: the MCP / LangChain submit and approve
+  descriptions now name the gate, and the OpenAPI spec's issue and
+  approve descriptions do too (the transfer route already defers to
+  issue's status codes). `initialize` now reports server version
+  0.37.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README funding section gained the
+  gate.
+- New `pnpm test:funding-gate` (`demo/funding-gate-test.ts`, 27 checks):
+  funded issue / transfer / sub-asset / unique still execute; an
+  over-balance transfer and a never-issued transfer 403 with the
+  funding object, debit nothing (the full balance still transfers
+  afterwards), are audited as decisions with no `EXECUTION_FAILED`,
+  and are not pending (approve -> 409); a funded hold still approves
+  and executes; and on a 100 RVN wallet a held issue is refused at
+  approval time with the funding DENY audited `atApproval: true`.
+  `demo/funding-test.ts` updated: the low-RVN real issue now expects
+  the 403 gate refusal instead of the old 502. `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`,
+  `pnpm test:hold-aging`, `pnpm test:policy-history`,
+  `pnpm test:funding`, `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:funding-gate` script.
+  No local Postgres on this VM, so the Postgres live legs were skipped
+  (as in recent sessions). One mock-semantics note for future tests:
+  the mock's `getAssetBalance` sums balances across all addresses, so
+  a transfer can never drain the balance the funding check sees — the
+  approval-time gate was proven with the RVN-fee case (a held issue on
+  a 100 RVN wallet), not with a drained asset balance.
+- The funding-gate item is complete; the next top item is the wallet
+  balances endpoint.
+
 ## 2026-11-20 — v0.36.0 (Balance-aware simulate, item complete)
 
 - Balance-aware simulate: `simulate` now answers the funding question
