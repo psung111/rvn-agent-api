@@ -22,6 +22,7 @@
  *   - get_ratelimit    -> GET  /v1/ratelimit/:agentId
  *   - get_anomaly_stats -> GET /v1/anomaly/:agentId
  *   - get_metrics      -> GET  /v1/metrics
+ *   - get_wallet_balances -> GET /v1/wallet/balances
  *   - archive_audit    -> POST /v1/audit/archive
  *   - get_openapi      -> GET  /v1/openapi.json (the machine-readable contract)
  *   - get_docs         -> GET  /v1/docs (the human-readable docs page, HTML)
@@ -379,6 +380,19 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: 'get_wallet_balances',
+    description:
+      'Read the wallet\'s balances (GET /v1/wallet/balances): the RVN balance plus every asset ' +
+      'balance the wallet holds, so an operator or monitoring agent can see what the wallet can ' +
+      'fund without simulating an intent for each asset. Only assets with a nonzero wallet balance ' +
+      'are listed. All quantities are decimal strings in base units. Read-only — polling it writes ' +
+      'nothing, so it cannot change what the next submit sees.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
     name: 'list_assets',
     description: 'List assets known to the node, optionally filtered by a glob pattern.',
     inputSchema: {
@@ -663,6 +677,10 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       const { status, body } = await api('/v1/metrics');
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
+    case 'get_wallet_balances': {
+      const { status, body } = await api('/v1/wallet/balances');
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
     case 'list_assets': {
       const pattern = typeof args.pattern === 'string' && args.pattern ? args.pattern : '*';
       const { status, body } = await api(`/v1/assets?pattern=${encodeURIComponent(pattern)}`);
@@ -724,7 +742,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.37.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.38.0' },
       });
     }
     case 'notifications/initialized':

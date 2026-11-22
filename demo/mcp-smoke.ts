@@ -34,6 +34,8 @@
  *   26. policy history / rollback via MCP (v0.35.0): set_policy twice, history
  *       lists the superseded version, rollback restores it, unknown version
  *       isError
+ *   27. get_wallet_balances via MCP (v0.38.0): issue a coin, balances list it
+ *       with the issued qty and the RVN balance reflects the fee
  *
  * Usage: pnpm mcp-smoke   (API must be running, default http://localhost:3001)
  */
@@ -119,7 +121,7 @@ async function main(): Promise<void> {
   // 2. tools/list
   const list = await send('tools/list');
   const names: string[] = (list.result?.tools ?? []).map((t: any) => t.name);
-  for (const want of ['issue_asset', 'transfer_asset', 'list_assets', 'get_audit', 'archive_audit', 'get_openapi', 'get_docs']) {
+  for (const want of ['issue_asset', 'transfer_asset', 'list_assets', 'get_audit', 'archive_audit', 'get_openapi', 'get_docs', 'get_wallet_balances']) {
     check(`tools/list includes ${want}`, names.includes(want), names);
   }
 
@@ -469,7 +471,7 @@ async function main(): Promise<void> {
   // Decision schema carries the full reason-code enum.
   const spec = await toolCall('get_openapi', {});
   check('get_openapi via MCP returns the OpenAPI 3.0.3 contract at the package version',
-    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.37.0' &&
+    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.38.0' &&
     typeof spec.body.paths === 'object' && '/v1/assets/issue' in spec.body.paths &&
     '/v1/openapi.json' in spec.body.paths && '/v1/docs' in spec.body.paths &&
     Array.isArray(spec.body.components?.schemas?.Decision?.properties?.reasonCodes?.items?.enum) &&
@@ -480,7 +482,7 @@ async function main(): Promise<void> {
   const docs = await toolCall('get_docs', {});
   check('get_docs via MCP returns the docs HTML at the package version',
     docs.ok && docs.body.httpStatus === 200 && typeof docs.body.html === 'string' &&
-    docs.body.html.includes(`<title>rvn-agent-api 0.37.0 — API docs</title>`) &&
+    docs.body.html.includes(`<title>rvn-agent-api 0.38.0 — API docs</title>`) &&
     docs.body.html.includes('/v1/assets/issue') && docs.body.html.includes('/v1/docs') &&
     docs.body.html.includes('<h2>Decision model</h2>') &&
     docs.body.html.includes('<code>RATE_LIMIT_EXCEEDED</code>'), docs.body.html?.slice(0, 200));
@@ -515,6 +517,39 @@ async function main(): Promise<void> {
   const rbBad = await toolCall('rollback_policy', { agentId: histAgent, versionId: 'no-such-version' });
   check('rollback_policy via MCP errors on an unknown version',
     !rbBad.ok && rbBad.body.httpStatus === 404, rbBad.body);
+
+  // 27. get_wallet_balances via MCP (v0.38.0) — issue a coin, then the
+  // wallet balances list it with the issued qty; the RVN balance is a
+  // decimal string below the 1,000,000 RVN the mock starts with (fees
+  // were paid), and the read writes nothing to the audit chain. A fresh
+  // agent: the shared smoke agent's per-kind issue bucket (section 18)
+  // is exhausted for the hour.
+  const wAgent = 'mcp-smoke-wallet';
+  const wPolicy = await toolCall('get_policy', { agentId: wAgent });
+  const wSet = await toolCall('set_policy', {
+    agentId: wAgent,
+    policy: { ...wPolicy.body, agentId: wAgent, allowedDestinations: [walletA] },
+  });
+  check('set_policy for the wallet-balances agent via MCP 200s',
+    wSet.ok && wSet.body.httpStatus === 200, wSet.body);
+  const wCoin = `SMOKEMCPW${Date.now() % 1_000_000}`;
+  const wIssue = await toolCall('issue_asset', { agentId: wAgent, name: wCoin, qty: '1234', toAddress: walletA });
+  check('issue for the wallet-balances check ALLOWs via MCP',
+    wIssue.ok && wIssue.body.decision?.kind === 'ALLOW', wIssue.body);
+  const auditBeforeWallet = await toolCall('get_audit', { limit: 100 });
+  const wBalances = await toolCall('get_wallet_balances', {});
+  const wEntry = wBalances.body.assets?.find((a: any) => a.name === wCoin);
+  check('get_wallet_balances via MCP lists the issued coin with its balance',
+    wBalances.ok && typeof wBalances.body.rvnBaseUnits === 'string' &&
+    /^\d+$/.test(wBalances.body.rvnBaseUnits) &&
+    BigInt(wBalances.body.rvnBaseUnits) < 1_000_000n * 100_000_000n &&
+    Array.isArray(wBalances.body.assets) &&
+    wEntry?.balanceBaseUnits === '1234' && wEntry?.units === 0, wBalances.body);
+  const auditAfterWallet = await toolCall('get_audit', { limit: 100 });
+  check('get_wallet_balances via MCP writes no audit entries',
+    auditAfterWallet.ok &&
+    (auditAfterWallet.body.entries?.length ?? -1) === (auditBeforeWallet.body.entries?.length ?? -2),
+    { before: auditBeforeWallet.body.entries?.length, after: auditAfterWallet.body.entries?.length });
 
   child.kill();
   shuttingDown = true;

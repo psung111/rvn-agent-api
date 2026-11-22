@@ -151,14 +151,15 @@ def main():
         # --- LangChain tools ---
         tools = get_tools(client)
         by_name = {t.name: t for t in tools}
-        check("25 tools built", len(tools) == 25, sorted(by_name))
+        check("26 tools built", len(tools) == 26, sorted(by_name))
         check("tool names cover every route",
               {"issue_asset", "reissue_asset", "issue_subasset", "issue_unique",
                "transfer_asset", "list_assets", "get_asset", "simulate_intent",
                "approve_intent", "deny_intent", "pending_intents", "get_policy",
                "set_policy", "list_presets", "apply_preset", "get_policy_history",
                "rollback_policy", "get_ratelimit",
-               "get_anomaly_stats", "get_metrics", "get_openapi", "get_docs", "get_audit",
+               "get_anomaly_stats", "get_metrics", "get_wallet_balances",
+               "get_openapi", "get_docs", "get_audit",
                "archive_audit", "create_wallet"} == set(by_name))
         stats = client.get_ratelimit()
         check("client get_ratelimit: unlimited agent reports limited:false",
@@ -215,6 +216,19 @@ def main():
               tool_metrics.get("decisions", {}).get("total") ==
               metrics.get("decisions", {}).get("total")
               and tool_metrics.get("store") == "memory", tool_metrics)
+        balances = client.get_wallet_balances()
+        check("client get_wallet_balances: RVN below the 1,000,000 start, issued coins listed",
+              balances.get("rvnBaseUnits", "").isdigit()
+              and int(balances["rvnBaseUnits"]) < 1_000_000 * 10**8
+              and any(a.get("name") == "LCADAPTER"
+                      and a.get("balanceBaseUnits") == "100"
+                      for a in balances.get("assets", [])),
+              balances)
+        tool_balances = json.loads(by_name["get_wallet_balances"].invoke({}))
+        check("tool get_wallet_balances matches the client shape",
+              tool_balances.get("rvnBaseUnits") == balances.get("rvnBaseUnits")
+              and tool_balances.get("assets") == balances.get("assets"),
+              tool_balances)
         spec = client.get_openapi()
         check("client get_openapi: OpenAPI 3.0.3 contract with every route",
               spec.get("openapi") == "3.0.3"

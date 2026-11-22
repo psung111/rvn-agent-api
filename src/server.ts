@@ -859,6 +859,25 @@ async function main() {
     });
   });
 
+  /**
+   * Wallet balances (read-only, v0.38.0): the wallet's RVN balance plus
+   * every asset balance it holds, so an operator or monitoring agent
+   * can see what the wallet can fund without simulating an intent for
+   * each asset. Read-only — the read writes nothing (no intents, no
+   * audit entries), so polling it cannot change what the next submit
+   * sees. A node that cannot answer is a 502, like any other node
+   * failure (the funding check's funded:null degradation does not
+   * apply here — there is no decision to keep, only the balances).
+   */
+  app.get('/v1/wallet/balances', async (_req, reply) => {
+    try {
+      return await node.listWalletBalances();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.code(502).send({ error: `node balance read failed: ${message}` });
+    }
+  });
+
   app.post('/v1/wallets', async () => {
     const address = await node.getNewAddress(`agent-${Date.now()}`);
     return { address };

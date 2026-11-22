@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ISSUANCE_FEE_BASE_UNITS, RVN_BASE_UNITS_PER_COIN } from '../policy/funding.js';
-import type { AssetInfo, ChainInfo, RvnNode } from './types.js';
+import type { AssetInfo, ChainInfo, RvnNode, WalletAssetBalance, WalletBalances } from './types.js';
 
 /**
  * Default mock wallet RVN balance: 1,000,000 RVN — enough that the
@@ -247,5 +247,21 @@ export class MockRvnNode implements RvnNode {
 
   async getRvnBalance(): Promise<string> {
     return this.rvnBalance.toString();
+  }
+
+  async listWalletBalances(): Promise<WalletBalances> {
+    // Same wallet semantics as getAssetBalance: every balance the
+    // ledger records is wallet-held. Assets fully transferred out
+    // (total 0) are not listed, matching ravend's `listmyassets`.
+    const assets: WalletAssetBalance[] = [];
+    for (const asset of this.assets.values()) {
+      let total = 0n;
+      for (const bal of asset.balances.values()) total += bal;
+      if (total > 0n) {
+        assets.push({ name: asset.name, balanceBaseUnits: total.toString(), units: asset.units });
+      }
+    }
+    assets.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { rvnBaseUnits: this.rvnBalance.toString(), assets };
   }
 }

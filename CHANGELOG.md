@@ -1,5 +1,72 @@
 # Changelog
 
+## 2026-11-22 — v0.38.0 (Wallet balances endpoint, item complete)
+
+- Wallet balances endpoint: new `GET /v1/wallet/balances` (read-only)
+  returns the wallet's RVN balance plus every asset balance it holds,
+  so an operator or monitoring agent can see what the wallet can fund
+  without simulating an intent for each asset. New
+  `listWalletBalances()` seam on `RvnNode` — `{ rvnBaseUnits, assets:
+  [{ name, balanceBaseUnits, units }] }`, assets sorted by name, only
+  nonzero balances listed (an asset fully transferred out disappears,
+  matching ravend's `listmyassets`). The mock sums its ledger balances
+  (the same wallet semantics as `getAssetBalance`, so the funding check
+  and execution agree); the real client reads `listmyassets` (verbose,
+  with the plain-number fallback through `getassetdata` for the units)
+  plus `getbalance`. A node that cannot answer is a 502 — there is no
+  decision to keep, only the balances, so the funding check's
+  `funded: null` degradation does not apply. The read writes nothing
+  (no intents, no audit entries), so polling it cannot change what the
+  next submit sees; it is a GET, so a `read`-scope key suffices under
+  auth.
+- Adapters keep the "cover every route" invariant: new
+  `get_wallet_balances` MCP tool and LangChain client method + tool
+  (`langchain_rvn` now builds 26 tools). The OpenAPI spec gained the
+  route plus a `WalletBalances` schema (the drift test covers it).
+  `initialize` now reports server version 0.38.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`); README route table
+  gained the row and a new "Wallet balances" section.
+- New `pnpm test:wallet` (`demo/wallet-test.ts`, 19 checks): mock units
+  (fresh wallet, fee debiting, sorting, units carriage, transfer
+  keeping the mock total, unique singleton), real-client units against
+  a stubbed fetch (verbose + plain-number entries, zero-balance skip,
+  null list, a throwing node rejecting so the route can answer 502),
+  and a booted-API integration (fresh wallet, issues appearing with
+  balance + units and the RVN fee debited, read purity, and an auth-on
+  leg — keyless 401, read-only key 200, write-only key 403, operator
+  200). `demo/mcp-smoke.ts` gained section 27 (issue, balances list the
+  coin, RVN below the 1,000,000 start, no audit entries) and the
+  tools/list check now includes `get_wallet_balances`;
+  `pnpm test:langchain` updated (26 tools, client + tool balances
+  shape). `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`,
+  `pnpm test:hold-aging`, `pnpm test:policy-history`,
+  `pnpm test:funding`, `pnpm test:funding-gate`,
+  `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:wallet` script. No
+  local Postgres on this VM, so the Postgres live legs were skipped
+  (as in recent sessions); the balances seam needs no migration. Two
+  harness notes: the mcp-smoke section needed a fresh agent (the shared
+  smoke agent's per-kind issue bucket from section 18 is exhausted for
+  the hour) and the default policy's empty allowlist (the wallet test
+  allowlists a provisioned address first, the funding test's pattern);
+  four suites crashed in the first back-to-back sweep run (approvals,
+  presets, migrations, webhooks) on port collisions between runs and
+  all passed on re-run — no product code at fault.
+- The wallet balances item is complete; the next top item is miner-fee
+  estimation in the funding check.
+
 ## 2026-11-21 — v0.37.0 (Funding gate on real submits, item complete)
 
 - Funding gate on real submits: the v0.36.0 funding check lived in

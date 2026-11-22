@@ -1,4 +1,4 @@
-import type { AssetInfo, ChainInfo, RvnNode } from './types.js';
+import type { AssetInfo, ChainInfo, RvnNode, WalletAssetBalance, WalletBalances } from './types.js';
 
 export interface RpcConfig {
   url: string;
@@ -209,5 +209,41 @@ export class RvnRpcClient implements RvnNode {
   async getRvnBalance(): Promise<string> {
     const balance = await this.call<number>('getbalance');
     return decimalToBaseUnits(balance, 8);
+  }
+
+  /**
+   * Wallet balances: RVN plus every asset the wallet holds, via
+   * `listmyassets` (verbose) + `getbalance`. A plain-number entry
+   * falls back to `getassetdata` for the units, like getAssetBalance.
+   * Zero-balance entries are skipped, matching the mock. NOTE: this
+   * path is implemented against the documented RPC shapes and is not
+   * verified against a live ravend on this VM (no live node here) —
+   * the mock leg and the stubbed-fetch units in `pnpm test:wallet`
+   * are what the suite exercises.
+   */
+  async listWalletBalances(): Promise<WalletBalances> {
+    const raw = await this.call<Record<
+      string,
+      number | { amount: number; units: number }
+    > | null>('listmyassets', ['*', true]);
+    const assets: WalletAssetBalance[] = [];
+    for (const [name, entry] of Object.entries(raw ?? {})) {
+      let balanceBaseUnits: string;
+      let units: number;
+      if (typeof entry === 'number') {
+        const data = await this.getAssetData(name);
+        if (!data) continue;
+        units = data.units;
+        balanceBaseUnits = decimalToBaseUnits(entry, units);
+      } else {
+        units = entry.units;
+        balanceBaseUnits = decimalToBaseUnits(entry.amount, units);
+      }
+      if (BigInt(balanceBaseUnits) > 0n) {
+        assets.push({ name, balanceBaseUnits, units });
+      }
+    }
+    assets.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { rvnBaseUnits: await this.getRvnBalance(), assets };
   }
 }

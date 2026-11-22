@@ -964,11 +964,46 @@ and logs the result in CHANGELOG.md.
   metrics, quorum, auth, mcp-auth, openapi, docs, hold-aging,
   policy-history, langchain suites still green. The funding-gate item is
   complete; the next top item is the wallet balances endpoint.
-- [ ] **Wallet balances endpoint** — `GET /v1/wallet/balances`
-  (read-only): the wallet's RVN balance plus every asset balance it
-  holds, so an operator or monitoring agent can see what the wallet
-  can fund without simulating an intent for each asset. MCP +
-  LangChain adapters cover it like every other route.
+- [x] 2026-11-22 — v0.38.0 Wallet balances endpoint (item complete):
+  new `GET /v1/wallet/balances` (read-only): the wallet's RVN balance
+  plus every asset balance it holds, so an operator or monitoring agent
+  can see what the wallet can fund without simulating an intent for each
+  asset. New `listWalletBalances()` seam on `RvnNode` returning
+  `{ rvnBaseUnits, assets: [{ name, balanceBaseUnits, units }] }`,
+  assets sorted by name, only nonzero balances listed — an asset fully
+  transferred out disappears, matching ravend's `listmyassets`. The
+  mock sums its ledger balances (the same wallet semantics as
+  `getAssetBalance`, so check and execution agree); the real client
+  reads `listmyassets` (verbose, with the plain-number fallback through
+  `getassetdata` for the units) plus `getbalance`. A node that cannot
+  answer is a 502 — there is no decision to keep, only the balances,
+  so the funding check's `funded: null` degradation does not apply.
+  The read writes nothing (no intents, no audit entries), so polling
+  it cannot change what the next submit sees; a GET, so a `read`-scope
+  key suffices under auth. New `get_wallet_balances` MCP tool and
+  LangChain client method + tool (26 tools now), keeping the "adapters
+  cover every route" invariant, and a `WalletBalances` schema in the
+  OpenAPI spec (the drift test covers the new route). Verified with new
+  `pnpm test:wallet` (`demo/wallet-test.ts`, 19 checks: mock units,
+  real-client units against a stubbed fetch incl. the plain-number
+  fallback, zero-balance skip, null list, and a throwing node, plus a
+  booted-API integration — fresh wallet, fee debiting, sorting, read
+  purity, and an auth-on leg proving keyless 401 / read-only 200 /
+  write-only 403 / operator 200), a new MCP smoke section (27), and
+  `pnpm test:langchain` (26 tools, client + tool balances shape); demo,
+  mcp-smoke, approvals, telegram-callback, simulate, reissue, subasset,
+  unique, presets, anomaly, store, archive, migrations, partition,
+  webhooks, ratelimit, metrics, quorum, auth, mcp-auth, openapi, docs,
+  hold-aging, policy-history, funding, funding-gate, langchain suites
+  still green. Two harness notes: the mcp-smoke section needed a fresh
+  agent (the shared smoke agent's per-kind issue bucket from section 18
+  is exhausted for the hour) and the default policy's empty
+  allowlist (the wallet test allowlists a provisioned address first,
+  the funding test's pattern); four suites crashed in the first
+  back-to-back sweep run (approvals, presets, migrations, webhooks) on
+  port collisions between runs and all passed on re-run — no product
+  code at fault. The wallet balances item is complete; the next top
+  item is miner-fee estimation in the funding check.
 - [ ] **Miner-fee estimation in the funding check** — the v0.36.0 check
   covers the issuance fee but not the variable per-transaction miner
   fee. Ask the node (`estimatesmartfee`) for the current fee rate,

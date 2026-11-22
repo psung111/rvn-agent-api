@@ -45,7 +45,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.37.0',
+    version: '0.38.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -132,6 +132,27 @@ export const openApiDocument = {
             content: { 'application/json': { schema: { $ref: '#/components/schemas/Metrics' } } },
           },
           '401': { $ref: '#/components/responses/Unauthorized' },
+        },
+      },
+    },
+    '/v1/wallet/balances': {
+      get: {
+        tags: ['Assets'],
+        summary: 'Wallet balances',
+        description:
+          'Read-only. The wallet\'s RVN balance plus every asset balance it holds, so an operator ' +
+          'or monitoring agent can see what the wallet can fund without simulating an intent for ' +
+          'each asset. Only assets with a nonzero wallet balance are listed — an asset fully ' +
+          'transferred out disappears from the list. All quantities are decimal strings in base ' +
+          'units; polling writes nothing (no intents, no audit entries). A node that cannot answer ' +
+          'returns 502.',
+        responses: {
+          '200': {
+            description: 'Current wallet balances.',
+            content: { 'application/json': { schema: { $ref: '#/components/schemas/WalletBalances' } } },
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '502': { $ref: '#/components/responses/NodeFailed' },
         },
       },
     },
@@ -1337,6 +1358,29 @@ export const openApiDocument = {
           },
         },
         additionalProperties: true,
+      },
+      WalletBalances: {
+        type: 'object',
+        description:
+          'The wallet\'s RVN balance plus every asset balance it holds (nonzero only). ' +
+          'All quantities are decimal strings in base units.',
+        required: ['rvnBaseUnits', 'assets'],
+        properties: {
+          rvnBaseUnits: { type: 'string', description: 'Wallet RVN balance in base units (1 RVN = 10^8).' },
+          assets: {
+            type: 'array',
+            description: 'Every asset the wallet holds, sorted by name.',
+            items: {
+              type: 'object',
+              required: ['name', 'balanceBaseUnits', 'units'],
+              properties: {
+                name: { type: 'string' },
+                balanceBaseUnits: { type: 'string', description: 'Wallet balance in base units (decimal string).' },
+                units: { type: 'integer', description: 'Decimal places of the asset.' },
+              },
+            },
+          },
+        },
       },
       Metrics: {
         type: 'object',

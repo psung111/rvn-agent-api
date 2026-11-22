@@ -52,6 +52,7 @@ verifies clean.
 | GET | `/v1/openapi.json` | this OpenAPI contract (public — no key needed, even with auth on) |
 | GET | `/v1/docs` | the same contract as a human-readable HTML page (public — no key needed, even with auth on) |
 | POST | `/v1/wallets` | provision an agent wallet address |
+| GET | `/v1/wallet/balances` | the wallet's RVN balance plus every asset balance it holds (nonzero only; read-only) |
 | POST | `/v1/assets/issue` | issue a new asset (policy-gated) |
 | POST | `/v1/assets/reissue` | reissue more supply of an existing reissuable asset (policy-gated like an issue; optional `reissuable`, `newUnits` 0–8, `newIpfsHash` — `newUnits` required when `newIpfsHash` is set) |
 | POST | `/v1/assets/issue-subasset` | issue a sub-asset under an existing parent (policy-gated like an issue; name must contain `/`) |
@@ -130,6 +131,17 @@ executed, no `EXECUTION_FAILED` entry) instead of failing at the node
 with a 502. A hold that became unfundable while it waited is caught the
 same way at approval time: approving it returns 403 with the funding
 DENY, audited as a decision with `atApproval: true`, and the hold ends.
+
+## Wallet balances
+
+`GET /v1/wallet/balances` answers "what can this wallet fund" in one
+read-only call: the RVN balance plus every asset balance the wallet
+holds, all as decimal strings in base units, assets sorted by name.
+Only assets with a nonzero wallet balance are listed — an asset fully
+transferred out disappears from the list. Polling it writes nothing (no
+intents, no audit entries), so it is safe for monitoring agents; a node
+that cannot answer returns 502. The MCP server (`get_wallet_balances`)
+and the LangChain client (`get_wallet_balances()`) expose the same read.
 
 ## API-key authentication
 

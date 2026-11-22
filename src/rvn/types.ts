@@ -75,4 +75,31 @@ export interface RvnNode {
    */
   getAssetBalance(assetName: string): Promise<string | null>;
   getRvnBalance(): Promise<string>;
+
+  /**
+   * Wallet balances for GET /v1/wallet/balances (v0.38.0): the wallet's
+   * RVN balance plus every asset balance it holds, so an operator or
+   * monitoring agent can see what the wallet can fund without
+   * simulating an intent for each asset. Read-only. Only assets with a
+   * nonzero wallet balance are listed — an asset fully transferred out
+   * disappears from the list (same as ravend's `listmyassets`).
+   */
+  listWalletBalances(): Promise<WalletBalances>;
+}
+
+/** One asset balance in the wallet, in base units (decimal string). */
+export interface WalletAssetBalance {
+  name: string;
+  /** Wallet balance in base units (decimal string). */
+  balanceBaseUnits: string;
+  /** Decimal places of the asset. */
+  units: number;
+}
+
+/** The wallet's balances: RVN plus every held asset, assets sorted by name. */
+export interface WalletBalances {
+  /** Wallet RVN balance in base units (decimal string). */
+  rvnBaseUnits: string;
+  /** Every asset the wallet holds (nonzero balance only), sorted by name. */
+  assets: WalletAssetBalance[];
 }

@@ -322,6 +322,17 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
+    def get_wallet_balances() -> str:
+        """Read the wallet's balances: the RVN balance plus every asset
+        balance the wallet holds (nonzero only), so an agent can see what
+        the wallet can fund without simulating an intent for each asset.
+        All quantities are decimal strings in base units. Read-only."""
+        try:
+            return _dump(client.get_wallet_balances())
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
     def get_openapi() -> str:
         """Read the API's OpenAPI 3.0.3 contract: every route, decision
         shape, reason code, and error status the API can return. Use it to
@@ -396,6 +407,7 @@ def build_tools(client: RvnApiClient) -> list:
         get_ratelimit,
         get_anomaly_stats,
         get_metrics,
+        get_wallet_balances,
         get_openapi,
         get_docs,
         get_audit,

@@ -384,6 +384,13 @@ class RvnApiClient:
         store backend."""
         return self._call("GET", "/v1/metrics")
 
+    def get_wallet_balances(self) -> dict[str, Any]:
+        """Read-only wallet balances: the wallet's RVN balance plus every
+        asset balance it holds (nonzero only), so an agent can see what
+        the wallet can fund without simulating an intent for each asset.
+        All quantities are decimal strings in base units."""
+        return self._call("GET", "/v1/wallet/balances")
+
     def get_openapi(self) -> dict[str, Any]:
         """Read the API's OpenAPI 3.0.3 contract: every route, decision
         shape, reason code, and error status. Public — no key needed,
