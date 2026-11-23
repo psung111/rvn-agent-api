@@ -213,9 +213,9 @@ async function main() {
       approvePoor.status === 403 && approvePoor.json.decision?.kind === 'DENY' &&
       approvePoor.json.decision?.reasonCodes?.length === 1 &&
       approvePoor.json.decision?.reasonCodes?.includes('INSUFFICIENT_RVN_BALANCE'), approvePoor.json);
-    check('approval-time 403 carries the funding object (100 RVN held vs 500 required)',
+    check('approval-time 403 carries the funding object (100 RVN held vs 500 RVN + miner fee required)',
       approvePoor.json.funding?.asset === 'RVN' &&
-      approvePoor.json.funding?.requiredBaseUnits === '50000000000' &&
+      approvePoor.json.funding?.requiredBaseUnits === '50000005000' &&
       approvePoor.json.funding?.balanceBaseUnits === '10000000000' &&
       approvePoor.json.funding?.funded === false, approvePoor.json.funding);
     check('approval-time funding deny carries no txid and no node error',

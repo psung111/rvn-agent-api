@@ -1100,8 +1100,9 @@ async function main() {
    *
    * Balance-aware (v0.36.0): when the policy decision is ALLOW, the wallet
    * balance is also checked (read-only node lookups — a transfer needs the
-   * wallet to hold qty of the asset, a supply-creating op needs enough RVN
-   * for the issuance fee). An ALLOW the wallet cannot fund is reported as
+   * wallet to hold qty of the asset plus enough RVN for the estimated miner
+   * fee, a supply-creating op needs enough RVN for the issuance fee plus
+   * the estimated miner fee, v0.39.0). An ALLOW the wallet cannot fund is reported as
    * DENY with INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE, and
    * the `funding` object carries the requirement and the balance seen, so
    * agents stop submitting doomed intents. A policy DENY or hold is

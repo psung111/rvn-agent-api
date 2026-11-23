@@ -45,7 +45,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.38.0',
+    version: '0.39.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -435,9 +435,12 @@ export const openApiDocument = {
           'aliases `name` / `toAddress` are accepted; for op `unique` the qty is normalized to "1". ' +
           'Balance-aware: when the policy decision is ALLOW, the wallet balance is checked too ' +
           '(read-only) — a transfer needs the wallet to hold the qty, a supply-creating op needs ' +
-          'enough RVN for the issuance fee — and an ALLOW the wallet cannot fund is reported as ' +
+          'enough RVN for the issuance fee plus the estimated miner fee (from the node fee rate ' +
+          'and the estimated transaction size; a transfer needs enough RVN for the miner fee on ' +
+          'top of the asset qty) — and an ALLOW the wallet cannot fund is reported as ' +
           'DENY with INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE, with the `funding` ' +
-          'object carrying the requirement and the balance seen. A policy DENY or hold carries no ' +
+          'object carrying the requirement and the balance seen. When the node cannot estimate a ' +
+          'fee rate the check degrades to the issuance fee / asset qty alone. A policy DENY or hold carries no ' +
           '`funding` object.',
         requestBody: {
           required: true,
@@ -475,14 +478,32 @@ export const openApiDocument = {
                       description:
                         'Present only when the policy decision was ALLOW: the funding check that ran ' +
                         'against the wallet (read-only). `funded: false` flips the decision to DENY; ' +
-                        '`funded: null` means the node could not answer and the ALLOW stands.',
+                        '`funded: null` means the node could not answer and the ALLOW stands. For a ' +
+                        'supply-creating op `requiredBaseUnits` is the issuance fee plus the estimated ' +
+                        'miner fee; for a transfer it is the asset qty and the miner fee is checked as ' +
+                        'a second RVN leg inside `minerFee`.',
                       properties: {
                         asset: { type: 'string', description: "Asset name, or 'RVN' when the requirement is the issuance fee." },
-                        requiredBaseUnits: { type: 'string', description: 'Required amount in base units (decimal string).' },
+                        requiredBaseUnits: { type: 'string', description: 'Required amount in base units (decimal string) — issuance fee plus estimated miner fee for a supply-creating op, asset qty for a transfer.' },
                         balanceBaseUnits: { type: 'string', nullable: true, description: 'Wallet balance in base units, or null when unknown (asset not held, or node error).' },
                         funded: { type: 'boolean', nullable: true, description: 'True when the wallet can fund the intent, false when it cannot, null when unknown.' },
                         reasonCode: { type: 'string', enum: ['INSUFFICIENT_ASSET_BALANCE', 'INSUFFICIENT_RVN_BALANCE'] },
                         error: { type: 'string', description: 'Node error message when the balance could not be read.' },
+                        minerFee: {
+                          type: 'object',
+                          description:
+                            'The miner-fee leg of the check, from the node fee rate (`estimatesmartfee`) ' +
+                            'and the estimated transaction size for this op kind. `requiredBaseUnits` is ' +
+                            'null when the node could not estimate a rate — the check then degrades to the ' +
+                            'issuance fee / asset qty alone.',
+                          properties: {
+                            requiredBaseUnits: { type: 'string', nullable: true, description: 'Estimated miner fee in RVN base units, or null when unestimable.' },
+                            rateBaseUnitsPerKb: { type: 'string', nullable: true, description: 'Fee rate behind the estimate, RVN base units per kilobyte; null when unestimable.' },
+                            estimatedTxSizeVbytes: { type: 'integer', description: 'Estimated transaction size in virtual bytes for this op kind.' },
+                            balanceBaseUnits: { type: 'string', nullable: true, description: 'Wallet RVN balance — only for transfers, whose miner fee is a separate RVN requirement from the asset qty.' },
+                            error: { type: 'string', description: 'Node error message when the fee rate could not be read.' },
+                          },
+                        },
                       },
                     },
                     note: { type: 'string' },

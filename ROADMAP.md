@@ -1004,13 +1004,46 @@ and logs the result in CHANGELOG.md.
   port collisions between runs and all passed on re-run — no product
   code at fault. The wallet balances item is complete; the next top
   item is miner-fee estimation in the funding check.
-- [ ] **Miner-fee estimation in the funding check** — the v0.36.0 check
-  covers the issuance fee but not the variable per-transaction miner
-  fee. Ask the node (`estimatesmartfee`) for the current fee rate,
-  estimate the transaction size per op, and add it to the required
-  RVN — so a wallet with exactly the issuance fee but no room for the
-  miner fee no longer simulates as funded and then fails at execution.
-  Degrades to fee-only when the node cannot estimate.
+- [x] 2026-11-23 — v0.39.0 Miner-fee estimation in the funding check
+  (item complete): the v0.36.0 check covered the issuance fee but not the
+  variable per-transaction miner fee, so a wallet holding exactly the
+  issuance fee simulated as funded and then failed at execution. New
+  `estimateFeeRateBaseUnitsPerKb()` seam on `RvnNode` — the current fee
+  rate in base units per kilobyte, via ravend's `estimatesmartfee`
+  (6-block target) on the real client (null on errors, a feerate of -1,
+  or a missing feerate) and a fixed 10,000 sat/kB default on the mock
+  (override with `MOCK_FEE_RATE_BASE_UNITS_PER_KB`, `null` to make it
+  unestimable). New `src/policy/funding.ts` — `ESTIMATED_TX_SIZE_VBYTES`
+  (issue/sub-asset 500 vB, reissue/unique 400 vB, transfer 350 vB —
+  padded estimates for a 1-input P2PKH asset tx, so the fee is never
+  understated) and `estimateMinerFeeBaseUnits()` (ceiling division, so a
+  partial kilobyte still pays the per-byte rate). `checkFunding` asks the
+  node for the rate and folds the miner fee into the requirement: a
+  supply-creating op needs issuance fee + miner fee in RVN, a transfer
+  needs the asset qty plus enough RVN for the miner fee as a second leg
+  (checked only once the asset leg passes). The response carries a
+  `minerFee` leg (estimated fee, rate, size, and — for transfers — the
+  RVN balance behind it). When the node cannot estimate a rate the check
+  degrades to fee-only (a throwing, malformed, or missing estimate
+  method degrades the same way, never a throw or a flipped ALLOW). The
+  mock debits the miner fee at execution too (issuance + miner fee on
+  supply-creating ops, miner fee on transfers; a failed call charges
+  nothing), so check and execution still agree. Adapters keep the
+  "cover every route" invariant with no new tool: the MCP / LangChain
+  simulate descriptions now name the miner fee, and the OpenAPI spec's
+  simulate `funding` schema gained the `minerFee` object. Verified with
+  new `pnpm test:miner-fee` (`demo/miner-fee-test.ts`, 61 checks: size
+  table and fee math incl. the ceiling, checkFunding units incl. the
+  RVN-shortfall transfer DENY and every degradation path, stubbed-fetch
+  estimatesmartfee parsing, mock debiting incl. the exact-boundary
+  wallet, and three booted-API integrations — the default wallet, a
+  100 RVN wallet where a reissue at exactly the issuance fee now DENYs,
+  and a 100 RVN + 4,000 sat wallet where it ALLOWs at the boundary);
+  the funding, funding-gate, and wallet suites' exact-balance
+  expectations were updated for the miner-fee debit. `pnpm demo`,
+  `pnpm mcp-smoke`, and every `test:*` suite still green. The
+  miner-fee estimation item is complete; the next top item is the
+  mainnet guardrail.
 - [ ] **Mainnet guardrail** — "never touch mainnet" is a hard rule but
   today it rests on the operator pointing the API at the right node.
   Refuse to boot against a mainnet chain (`getblockchaininfo` chain

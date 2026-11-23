@@ -285,8 +285,9 @@ class RvnApiClient:
         ``subasset`` | ``unique``. The returned decision id is namespaced
         ``sim-`` and can never be approved or denied. Balance-aware: a
         policy ALLOW the wallet cannot fund (asset balance too low for a
-        transfer, or too little RVN for the issuance fee) comes back as
-        DENY with INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE,
+        transfer, or too little RVN for the issuance fee plus the
+        estimated miner fee) comes back as DENY with
+        INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE,
         with a ``funding`` object carrying the requirement and the balance
         seen.
         """

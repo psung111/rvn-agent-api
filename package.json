@@ -46,7 +46,8 @@
     "test:policy-history": "tsx demo/policy-history-test.ts",
     "test:funding": "tsx demo/funding-test.ts",
     "test:funding-gate": "tsx demo/funding-gate-test.ts",
+    "test:miner-fee": "tsx demo/miner-fee-test.ts",
     "test:wallet": "tsx demo/wallet-test.ts"
   },
-  "version": "0.38.0"
+  "version": "0.39.0"
 }

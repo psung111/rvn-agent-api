@@ -190,7 +190,8 @@ const TOOLS: ToolDef[] = [
       'Returns the decision the policy WOULD make — ALLOW, REQUIRE_APPROVAL, or DENY — without ' +
       'storing the intent, recording issue spend, appending to the audit chain, notifying ' +
       'approvers, or executing anything. Balance-aware: a policy ALLOW the wallet cannot fund ' +
-      '(asset balance too low for a transfer, or too little RVN for the issuance fee) comes ' +
+      '(asset balance too low for a transfer, or too little RVN for the issuance fee plus the ' +
+      'estimated miner fee) comes ' +
       'back as DENY with INSUFFICIENT_ASSET_BALANCE / INSUFFICIENT_RVN_BALANCE, with a `funding` ' +
       'object carrying the requirement and the balance seen. Use it to check an action before committing to it.',
     inputSchema: {
@@ -742,7 +743,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.38.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.39.0' },
       });
     }
     case 'notifications/initialized':

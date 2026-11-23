@@ -22,10 +22,11 @@
  *   - simulations have zero side effects (audit seq, pending list,
  *     no asset created)
  *   - a second API with MOCK_RVN_BALANCE_BASE_UNITS=100 RVN DENYs an
- *     issue (500 RVN fee), ALLOWs a unique (5 RVN) and a reissue at
- *     exactly the balance (100 RVN), and a real issue against it is
- *     refused by the funding gate with 403 (v0.37.0 — no longer a 502
- *     from the node) and creates no asset.
+ *     issue (500 RVN fee + miner fee), ALLOWs a unique (5 RVN + miner
+ *     fee) and DENYs a reissue at exactly the balance (100 RVN fee with
+ *     no room for the miner fee, since v0.39.0), and a real issue
+ *     against it is refused by the funding gate with 403 (v0.37.0 — no
+ *     longer a 502 from the node) and creates no asset.
  *
  * Nothing touches the network: the API is localhost-only.
  */
@@ -179,8 +180,8 @@ async function main() {
     tUnknown.funded === false && tUnknown.balanceBaseUnits === null, tUnknown);
   const iFunded = await checkFunding(intent('issue_asset', 'ANOTHER', '1'), mock);
   check('mock: issue fee is funded from the default 1,000,000 RVN wallet',
-    iFunded.funded === true && iFunded.balanceBaseUnits === '99950000000000', iFunded);
-  // (999,500 RVN: the MOCKCOIN issue above already paid its 500 RVN fee.)
+    iFunded.funded === true && iFunded.balanceBaseUnits === '99949999995000', iFunded);
+  // (999,499.99995 RVN: the MOCKCOIN issue above already paid its 500 RVN fee + 5,000 sat miner fee.)
   const throwing = {
     getAssetBalance: async (): Promise<string | null> => { throw new Error('node down'); },
     getRvnBalance: async (): Promise<string> => { throw new Error('node down'); },
@@ -209,8 +210,8 @@ async function main() {
   const beforeUnique = await richMock.getRvnBalance();
   await richMock.issueUniqueAsset({ name: 'RICHROOT#TAG1', toAddress: 'mtest1wallet000001xxxxxxxxxxxx' });
   const afterUnique = await richMock.getRvnBalance();
-  check('unique-asset issue debits exactly the 5 RVN fee',
-    BigInt(beforeUnique) - BigInt(afterUnique) === 500000000n, { beforeUnique, afterUnique });
+  check('unique-asset issue debits the 5 RVN fee + 4,000 sat miner fee',
+    BigInt(beforeUnique) - BigInt(afterUnique) === 500004000n, { beforeUnique, afterUnique });
 
   // ================= integration: default mock wallet =================
   const api1 = await bootApi(API1_PORT);
@@ -250,8 +251,8 @@ async function main() {
       op: 'issue', agentId: AGENT, assetName: 'FUNDNEW', qty: '500', destination: address,
     });
     check('issue simulate -> ALLOW', simIssue.status === 200 && simIssue.json.decision?.kind === 'ALLOW', simIssue.json);
-    check('issue simulate reports the 500 RVN fee as funded',
-      simIssue.json.funding?.asset === 'RVN' && simIssue.json.funding?.requiredBaseUnits === '50000000000' &&
+    check('issue simulate reports the 500 RVN fee + miner fee as funded',
+      simIssue.json.funding?.asset === 'RVN' && simIssue.json.funding?.requiredBaseUnits === '50000005000' &&
       simIssue.json.funding?.balanceBaseUnits === '100000000000000' && simIssue.json.funding?.funded === true,
       simIssue.json.funding);
 
@@ -297,15 +298,15 @@ async function main() {
     const simSub = await req1.post('/v1/intents/simulate', {
       op: 'subasset', agentId: AGENT, assetName: 'FUNDCOIN/SIM', qty: '10', destination: address,
     });
-    check('sub-asset simulate -> ALLOW with the 100 RVN fee funded',
+    check('sub-asset simulate -> ALLOW with the 100 RVN fee + miner fee funded',
       simSub.status === 200 && simSub.json.decision?.kind === 'ALLOW' &&
-      simSub.json.funding?.requiredBaseUnits === '10000000000' && simSub.json.funding?.funded === true, simSub.json);
+      simSub.json.funding?.requiredBaseUnits === '10000005000' && simSub.json.funding?.funded === true, simSub.json);
     const simUnique = await req1.post('/v1/intents/simulate', {
       op: 'unique', agentId: AGENT, assetName: 'FUNDCOIN#SIM1', destination: address,
     });
-    check('unique simulate -> ALLOW with the 5 RVN fee funded',
+    check('unique simulate -> ALLOW with the 5 RVN fee + miner fee funded',
       simUnique.status === 200 && simUnique.json.decision?.kind === 'ALLOW' &&
-      simUnique.json.funding?.requiredBaseUnits === '500000000' && simUnique.json.funding?.funded === true, simUnique.json);
+      simUnique.json.funding?.requiredBaseUnits === '500004000' && simUnique.json.funding?.funded === true, simUnique.json);
 
     // --- F. policy DENY / hold carry no funding object ---
     const simCap = await req1.post('/v1/intents/simulate', {
@@ -365,10 +366,12 @@ async function main() {
     check('low-RVN issue simulate -> DENY INSUFFICIENT_RVN_BALANCE',
       simPoor.status === 200 && simPoor.json.decision?.kind === 'DENY' &&
       simPoor.json.decision?.reasonCodes?.includes('INSUFFICIENT_RVN_BALANCE'), simPoor.json.decision);
-    check('low-RVN funding object shows 100 RVN held vs 500 required',
+    check('low-RVN funding object shows 100 RVN held vs 500 RVN + miner fee required',
       simPoor.json.funding?.funded === false && simPoor.json.funding?.balanceBaseUnits === '10000000000' &&
-      simPoor.json.funding?.requiredBaseUnits === '50000000000', simPoor.json.funding);
-    // Unique (5 RVN) still fits; reissue at exactly the balance (100 RVN) fits.
+      simPoor.json.funding?.requiredBaseUnits === '50000005000', simPoor.json.funding);
+    // Unique (5 RVN) still fits; a reissue at exactly the balance (100 RVN)
+    // no longer fits since v0.39.0 — the 4,000 sat miner fee sits on top
+    // of the 100 RVN fee (the boundary ALLOW moved to pnpm test:miner-fee).
     const simUniquePoor = await req2.post('/v1/intents/simulate', {
       op: 'unique', agentId: AGENT, assetName: 'POORROOT#TAG1', destination: address,
     });
@@ -378,11 +381,12 @@ async function main() {
     const simReissuePoor = await req2.post('/v1/intents/simulate', {
       op: 'reissue', agentId: AGENT, assetName: 'POORROOT', qty: '10', destination: address,
     });
-    check('low-RVN reissue simulate -> ALLOW at exactly the 100 RVN balance',
-      simReissuePoor.status === 200 && simReissuePoor.json.decision?.kind === 'ALLOW' &&
+    check('low-RVN reissue simulate -> DENY at exactly the 100 RVN balance (miner fee on top)',
+      simReissuePoor.status === 200 && simReissuePoor.json.decision?.kind === 'DENY' &&
+      simReissuePoor.json.decision?.reasonCodes?.includes('INSUFFICIENT_RVN_BALANCE') &&
       simReissuePoor.json.funding?.balanceBaseUnits === '10000000000' &&
-      simReissuePoor.json.funding?.requiredBaseUnits === '10000000000' &&
-      simReissuePoor.json.funding?.funded === true, simReissuePoor.json);
+      simReissuePoor.json.funding?.requiredBaseUnits === '10000004000' &&
+      simReissuePoor.json.funding?.funded === false, simReissuePoor.json);
     // The check and the execution agree — and since v0.37.0 the funding
     // gate refuses the doomed submit outright instead of letting it fail
     // at the node: a 403 DENY with the funding reason code, no asset,

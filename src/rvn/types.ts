@@ -77,6 +77,16 @@ export interface RvnNode {
   getRvnBalance(): Promise<string>;
 
   /**
+   * Current fee rate in RVN base units per kilobyte, via
+   * `estimatesmartfee` (v0.39.0) — the rate the funding check uses to
+   * estimate the per-transaction miner fee. Null when the node cannot
+   * estimate (too little fee data, or the RPC fails): the funding check
+   * degrades to the issuance fee / asset qty alone instead of failing.
+   * Read-only.
+   */
+  estimateFeeRateBaseUnitsPerKb(): Promise<string | null>;
+
+  /**
    * Wallet balances for GET /v1/wallet/balances (v0.38.0): the wallet's
    * RVN balance plus every asset balance it holds, so an operator or
    * monitoring agent can see what the wallet can fund without

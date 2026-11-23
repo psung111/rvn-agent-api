@@ -169,7 +169,10 @@ def build_tools(client: RvnApiClient) -> list:
         audit chain, or executing. op is issue, transfer, reissue, subasset,
         or unique. Balance-aware: a policy ALLOW the wallet cannot fund
         comes back as DENY with INSUFFICIENT_ASSET_BALANCE /
-        INSUFFICIENT_RVN_BALANCE and a funding object. Always simulate
+        INSUFFICIENT_RVN_BALANCE and a funding object — the requirement
+        includes the estimated miner fee (issuance fee plus miner fee for
+        a supply-creating op; asset qty plus the miner fee as a second
+        RVN leg for a transfer). Always simulate
         before acting when unsure."""
         try:
             return _dump(client.simulate_intent(op, asset_name, qty, destination))

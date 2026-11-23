@@ -108,8 +108,8 @@ async function main() {
     fresh);
   await mock.issueAsset({ name: 'WALLETCOIN', qty: '1000', toAddress: DEST, units: 2 });
   const afterIssue = await mock.listWalletBalances();
-  check('mock issue debits the 500 RVN fee and lists the asset with balance + units',
-    afterIssue.rvnBaseUnits === (999_500n * RVN_BASE_UNITS_PER_COIN).toString() &&
+  check('mock issue debits the 500 RVN fee + 5,000 sat miner fee and lists the asset with balance + units',
+    afterIssue.rvnBaseUnits === ((999_500n * RVN_BASE_UNITS_PER_COIN) - 5_000n).toString() &&
     afterIssue.assets.length === 1 &&
     afterIssue.assets[0]?.name === 'WALLETCOIN' &&
     afterIssue.assets[0]?.balanceBaseUnits === '1000' &&
@@ -221,9 +221,9 @@ async function main() {
     const auditBefore = await get(API1, '/v1/audit?limit=100');
     const auditLenBefore = (auditBefore.json?.entries ?? []).length;
     const apiBalances = await get(API1, '/v1/wallet/balances');
-    check('API balances after issues: fee debited, assets sorted with balances',
+    check('API balances after issues: fee + miner fee debited, assets sorted with balances',
       apiBalances.status === 200 &&
-      apiBalances.json?.rvnBaseUnits === (999_000n * RVN_BASE_UNITS_PER_COIN).toString() &&
+      apiBalances.json?.rvnBaseUnits === ((999_000n * RVN_BASE_UNITS_PER_COIN) - 10_000n).toString() &&
       apiBalances.json?.assets?.length === 2 &&
       apiBalances.json.assets[0]?.name === 'INTCOIN' &&
       apiBalances.json.assets[0]?.balanceBaseUnits === '500' &&

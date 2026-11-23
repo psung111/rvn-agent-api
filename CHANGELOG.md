@@ -1,5 +1,82 @@
 # Changelog
 
+## 2026-11-23 — v0.39.0 (Miner-fee estimation in the funding check, item complete)
+
+- Miner-fee estimation in the funding check: the v0.36.0 check covered
+  the issuance fee but not the variable per-transaction miner fee, so a
+  wallet holding exactly the issuance fee simulated as funded and then
+  failed at execution. New `estimateFeeRateBaseUnitsPerKb()` seam on
+  `RvnNode` — the current fee rate in RVN base units per kilobyte, via
+  ravend's `estimatesmartfee` (6-block target) on the real client (null
+  on an RPC error, a feerate of -1, an errors list, or a missing
+  feerate) and a fixed 10,000 sat/kB default on the mock (override with
+  `MOCK_FEE_RATE_BASE_UNITS_PER_KB`; the literal `null` makes it
+  unestimable). New in `src/policy/funding.ts` — the per-op
+  `ESTIMATED_TX_SIZE_VBYTES` table (issue/sub-asset 500 vB,
+  reissue/unique 400 vB, transfer 350 vB — padded estimates for a
+  1-input P2PKH asset transaction, so the fee is never understated) and
+  `estimateMinerFeeBaseUnits()` (ceiling division, so a partial
+  kilobyte still pays the per-byte rate). `checkFunding` asks the node
+  for the rate and folds the miner fee into the requirement: a
+  supply-creating op needs issuance fee + miner fee in RVN, a transfer
+  needs the asset qty plus enough RVN for the miner fee as a second leg
+  (checked only once the asset leg passes, so an unfundable transfer
+  never spends a node call on the RVN side). The response carries a
+  `minerFee` leg (estimated fee, rate, size, and — for transfers — the
+  RVN balance behind it). When the node cannot estimate a rate the
+  check degrades to the issuance fee / asset qty alone — a throwing,
+  malformed, or missing estimate method degrades the same way, never a
+  throw and never a flipped ALLOW. The mock debits the miner fee at
+  execution too (issuance + miner fee on supply-creating ops, miner fee
+  on transfers, checked before any asset moves so a failed call charges
+  nothing), so check and execution still agree.
+- Adapters keep the "cover every route" invariant with no new tool: the
+  MCP / LangChain `simulate_intent` descriptions now name the miner
+  fee, and the OpenAPI spec's simulate `funding` schema gained the
+  `minerFee` object (the drift test covers it). `initialize` now
+  reports server version 0.39.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README funding section rewritten
+  around the miner fee.
+- New `pnpm test:miner-fee` (`demo/miner-fee-test.ts`, 61 checks): size
+  table and fee math incl. the ceiling, checkFunding units incl. the
+  RVN-shortfall transfer DENY (`INSUFFICIENT_RVN_BALANCE`) and every
+  degradation path (null / throwing / malformed / missing estimate),
+  stubbed-fetch `estimatesmartfee` parsing (rate conversion, feerate -1
+  / missing feerate / RPC error all -> null), mock debiting incl. a
+  wallet with exactly fee + miner fee issuing to 0 RVN and then
+  refusing a transfer, and three booted-API integrations — the default
+  wallet, a 100 RVN wallet where a reissue at exactly the 100 RVN
+  issuance fee now DENYs (the headline case) while a unique still
+  ALLOWs, and a 100 RVN + 4,000 sat wallet where the reissue ALLOWs at
+  the boundary. The funding, funding-gate, and wallet suites' exact
+  RVN-balance expectations were updated for the miner-fee debit
+  (a reissue at exactly the balance now DENYs in `pnpm test:funding`
+  too). `pnpm demo`, `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`,
+  `pnpm test:hold-aging`, `pnpm test:policy-history`,
+  `pnpm test:funding`, `pnpm test:funding-gate`,
+  `pnpm test:wallet`, `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:miner-fee` script. No
+  local Postgres on this VM, so the Postgres live legs were skipped
+  (as in recent sessions); the miner-fee seam needs no migration. The
+  real-node `estimatesmartfee` path is implemented against the
+  documented RPC shape and is NOT verified against a live ravend (no
+  live node here) — the mock leg and the stubbed-fetch units are what
+  the suite exercises.
+- The miner-fee estimation item is complete; the next top item is the
+  mainnet guardrail.
+
 ## 2026-11-22 — v0.38.0 (Wallet balances endpoint, item complete)
 
 - Wallet balances endpoint: new `GET /v1/wallet/balances` (read-only)

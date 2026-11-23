@@ -10,9 +10,17 @@
  * The fees are Ravencoin consensus issuance fees, in RVN base units
  * (1 RVN = 10^8 base units): issue 500 RVN, reissue 100 RVN, sub-asset
  * 100 RVN, unique asset 5 RVN. They are chain constants, not policy —
- * the policy engine never sees them. The variable per-transaction miner
- * fee is NOT checked: it is small, node-dependent, and unknowable
- * before the transaction is built.
+ * the policy engine never sees them.
+ *
+ * On top of the issuance fee, every transaction pays a variable
+ * per-transaction miner fee (v0.39.0): the node is asked for its current
+ * fee rate (`estimatesmartfee`, base units per kilobyte) and the fee is
+ * estimated from the transaction size for the op kind. A supply-creating
+ * op needs RVN for fee + miner fee; a transfer needs the asset qty plus
+ * enough RVN for the miner fee. A wallet holding exactly the issuance
+ * fee but no room for the miner fee is unfunded — it used to simulate as
+ * funded and then fail at execution. When the node cannot estimate a
+ * rate, the check degrades to the issuance fee / asset qty alone.
  *
  * The check is read-only (balance lookups only) and runs only when the
  * policy decision is ALLOW: a policy DENY or hold is reported as-is,
@@ -43,9 +51,69 @@ export const ISSUANCE_FEE_BASE_UNITS = {
 export type FundingReasonCode = 'INSUFFICIENT_ASSET_BALANCE' | 'INSUFFICIENT_RVN_BALANCE';
 
 /**
+ * Estimated transaction size in virtual bytes per op kind. A 1-input
+ * P2PKH Ravencoin asset transaction is ~250 vB (a ~148 vB input, a
+ * ~60 vB OP_RVN_ASSET output, a ~34 vB change output, ~10 vB overhead);
+ * the estimates pad for a second input or a larger asset script, so the
+ * miner-fee estimate is conservative — it never understates the fee the
+ * node will actually charge. These are estimates, not consensus values:
+ * the exact size is knowable only once the transaction is built.
+ */
+export const ESTIMATED_TX_SIZE_VBYTES = {
+  issue_asset: 500,
+  reissue_asset: 400,
+  issue_subasset: 500,
+  issue_unique: 400,
+  transfer_asset: 350,
+} as const satisfies Record<RvnIntent['kind'], number>;
+
+/**
+ * Estimated miner fee in RVN base units for an op at a fee rate of
+ * `rateBaseUnitsPerKb` base units per kilobyte. Ceiling division: a
+ * partial kilobyte still pays the per-byte rate, so the estimate never
+ * comes in under the fee the node will charge for the estimated size.
+ */
+export function estimateMinerFeeBaseUnits(
+  kind: RvnIntent['kind'],
+  rateBaseUnitsPerKb: string,
+): string {
+  const rate = BigInt(rateBaseUnitsPerKb);
+  const size = BigInt(ESTIMATED_TX_SIZE_VBYTES[kind]);
+  return ((rate * size + 999n) / 1000n).toString();
+}
+
+/**
+ * The miner-fee leg of a funding check: the estimated fee for this op,
+ * from the node's fee rate and the estimated transaction size. When the
+ * node cannot estimate a rate, `requiredBaseUnits` and
+ * `rateBaseUnitsPerKb` are null and the check degrades to the issuance
+ * fee / asset qty alone.
+ */
+export interface MinerFeeEstimate {
+  /** Estimated miner fee in RVN base units, or null when unestimable. */
+  requiredBaseUnits: string | null;
+  /** Fee rate behind the estimate, RVN base units per kilobyte; null when unestimable. */
+  rateBaseUnitsPerKb: string | null;
+  /** Estimated transaction size in virtual bytes for this op kind. */
+  estimatedTxSizeVbytes: number;
+  /**
+   * Wallet RVN balance in base units — only for transfers, whose miner
+   * fee is a separate RVN requirement from the asset qty; null when the
+   * node could not answer. Omitted for supply-creating ops, where the
+   * top-level balance already is the RVN balance.
+   */
+  balanceBaseUnits?: string | null;
+  /** Node error message when the fee rate could not be read. */
+  error?: string;
+}
+
+/**
  * What the wallet must hold for this intent to execute: the asset (or
  * 'RVN' for a fee), the required amount in base units as a decimal
- * string, and the reason code reported when it cannot pay.
+ * string, and the reason code reported when it cannot pay. This is the
+ * base requirement — the issuance fee (or the asset qty) — before the
+ * miner fee: `checkFunding` adds the estimated miner fee on top for
+ * RVN requirements, and checks it as a second leg for transfers.
  */
 export interface FundingRequirement {
   /** Asset name, or 'RVN' when the requirement is the issuance fee. */
@@ -90,31 +158,119 @@ export interface FundingCheck {
   reasonCode: FundingReasonCode;
   /** Node error message when the balance could not be read; never a secret. */
   error?: string;
+  /**
+   * The miner-fee leg of the check. Always present on checks produced by
+   * `checkFunding`; optional here so hand-built checks (tests) may omit it.
+   */
+  minerFee?: MinerFeeEstimate;
 }
 
 /**
  * Read-only funding check against the node. Never throws: a node error
  * is reported as `funded: null` with the error message, and the caller
  * keeps the policy decision.
+ *
+ * The miner fee rides on top of the base requirement. For a
+ * supply-creating op the RVN requirement is issuance fee + estimated
+ * miner fee, so a wallet holding exactly the issuance fee is unfunded.
+ * For a transfer the asset qty stays the top-level requirement and the
+ * miner fee is checked as a second, RVN-denominated leg — the asset leg
+ * runs first, so a transfer the wallet cannot fund on the asset side
+ * never spends a node call on the RVN side. When the node cannot
+ * estimate a fee rate (too little fee data, a throwing estimate, or a
+ * node without the method), the check degrades to the base requirement
+ * alone and the miner-fee leg reports nulls instead of failing the
+ * simulation.
  */
 export async function checkFunding(intent: RvnIntent, node: RvnNode): Promise<FundingCheck> {
   const requirement = fundingRequirementFor(intent);
+  const estimatedTxSizeVbytes = ESTIMATED_TX_SIZE_VBYTES[intent.kind];
+  // The fee rate is advisory: an unestimable rate degrades the check to
+  // the base requirement, never a throw and never a flipped ALLOW.
+  let rateBaseUnitsPerKb: string | null = null;
+  let rateError: string | undefined;
   try {
-    const balance =
-      requirement.asset === 'RVN'
-        ? await node.getRvnBalance()
-        : await node.getAssetBalance(requirement.asset);
-    if (balance === null) {
-      // The wallet holds none of the asset (or the asset is unknown):
-      // that is a funding failure, not an unknown — a transfer of an
-      // asset the wallet does not hold can never execute.
-      return { ...requirement, balanceBaseUnits: null, funded: false };
+    if (typeof node.estimateFeeRateBaseUnitsPerKb === 'function') {
+      const rate = await node.estimateFeeRateBaseUnitsPerKb();
+      if (rate !== null && /^\d+$/.test(rate)) rateBaseUnitsPerKb = rate;
+      else if (rate !== null) rateError = `malformed fee rate: ${rate}`;
     }
-    const funded = BigInt(balance) >= BigInt(requirement.requiredBaseUnits);
-    return { ...requirement, balanceBaseUnits: balance, funded };
+  } catch (err) {
+    rateError = err instanceof Error ? err.message : String(err);
+    rateBaseUnitsPerKb = null;
+  }
+  const minerFeeBaseUnits =
+    rateBaseUnitsPerKb === null ? null : estimateMinerFeeBaseUnits(intent.kind, rateBaseUnitsPerKb);
+  const minerFee: MinerFeeEstimate = {
+    requiredBaseUnits: minerFeeBaseUnits,
+    rateBaseUnitsPerKb,
+    estimatedTxSizeVbytes,
+    ...(rateError !== undefined ? { error: rateError } : {}),
+  };
+
+  if (requirement.asset === 'RVN') {
+    // Supply-creating op: one RVN requirement — issuance fee + miner fee.
+    const required =
+      minerFeeBaseUnits === null
+        ? requirement.requiredBaseUnits
+        : (BigInt(requirement.requiredBaseUnits) + BigInt(minerFeeBaseUnits)).toString();
+    try {
+      const balance = await node.getRvnBalance();
+      return {
+        ...requirement,
+        requiredBaseUnits: required,
+        balanceBaseUnits: balance,
+        funded: BigInt(balance) >= BigInt(required),
+        minerFee,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ...requirement,
+        requiredBaseUnits: required,
+        balanceBaseUnits: null,
+        funded: null,
+        error: message,
+        minerFee,
+      };
+    }
+  }
+
+  // Transfer: the asset qty is the top-level requirement; the miner fee
+  // is a second RVN leg, checked only once the asset leg passes.
+  try {
+    const balance = await node.getAssetBalance(requirement.asset);
+    if (balance === null || BigInt(balance) < BigInt(requirement.requiredBaseUnits)) {
+      // The wallet holds none of the asset (or too little of it): that is
+      // a funding failure, not an unknown — a transfer the wallet cannot
+      // cover on the asset side can never execute.
+      return { ...requirement, balanceBaseUnits: balance, funded: false, minerFee };
+    }
+    if (minerFeeBaseUnits === null) {
+      return { ...requirement, balanceBaseUnits: balance, funded: true, minerFee };
+    }
+    try {
+      const rvnBalance = await node.getRvnBalance();
+      const rvnFunded = BigInt(rvnBalance) >= BigInt(minerFeeBaseUnits);
+      return {
+        ...requirement,
+        balanceBaseUnits: balance,
+        funded: rvnFunded,
+        ...(rvnFunded ? {} : { reasonCode: 'INSUFFICIENT_RVN_BALANCE' }),
+        minerFee: { ...minerFee, balanceBaseUnits: rvnBalance },
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ...requirement,
+        balanceBaseUnits: balance,
+        funded: null,
+        minerFee: { ...minerFee, balanceBaseUnits: null, error: message },
+      };
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ...requirement, balanceBaseUnits: null, funded: null, error: message };
+    return { ...requirement, balanceBaseUnits: null, funded: null, error: message, minerFee };
   }
 }
 

@@ -471,7 +471,7 @@ async function main(): Promise<void> {
   // Decision schema carries the full reason-code enum.
   const spec = await toolCall('get_openapi', {});
   check('get_openapi via MCP returns the OpenAPI 3.0.3 contract at the package version',
-    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.38.0' &&
+    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.39.0' &&
     typeof spec.body.paths === 'object' && '/v1/assets/issue' in spec.body.paths &&
     '/v1/openapi.json' in spec.body.paths && '/v1/docs' in spec.body.paths &&
     Array.isArray(spec.body.components?.schemas?.Decision?.properties?.reasonCodes?.items?.enum) &&
@@ -482,7 +482,7 @@ async function main(): Promise<void> {
   const docs = await toolCall('get_docs', {});
   check('get_docs via MCP returns the docs HTML at the package version',
     docs.ok && docs.body.httpStatus === 200 && typeof docs.body.html === 'string' &&
-    docs.body.html.includes(`<title>rvn-agent-api 0.38.0 — API docs</title>`) &&
+    docs.body.html.includes(`<title>rvn-agent-api 0.39.0 — API docs</title>`) &&
     docs.body.html.includes('/v1/assets/issue') && docs.body.html.includes('/v1/docs') &&
     docs.body.html.includes('<h2>Decision model</h2>') &&
     docs.body.html.includes('<code>RATE_LIMIT_EXCEEDED</code>'), docs.body.html?.slice(0, 200));

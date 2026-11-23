@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { ISSUANCE_FEE_BASE_UNITS, RVN_BASE_UNITS_PER_COIN } from '../policy/funding.js';
+import {
+  estimateMinerFeeBaseUnits,
+  ISSUANCE_FEE_BASE_UNITS,
+  RVN_BASE_UNITS_PER_COIN,
+} from '../policy/funding.js';
 import type { AssetInfo, ChainInfo, RvnNode, WalletAssetBalance, WalletBalances } from './types.js';
 
 /**
@@ -24,6 +28,29 @@ function mockRvnBalanceFromEnv(): bigint {
 }
 
 /**
+ * Default mock fee rate: 10,000 sat/kB (0.0001 RVN/kB — Ravencoin's
+ * default minimum relay fee). Override with
+ * MOCK_FEE_RATE_BASE_UNITS_PER_KB (base units per kB); the literal
+ * 'null' makes the mock unable to estimate, so the funding check
+ * degrades to fee-only. A malformed value falls back to the default,
+ * never a startup crash. The miner-fee test sets it low/high on purpose
+ * to prove the boundary.
+ */
+export const DEFAULT_MOCK_FEE_RATE_BASE_UNITS_PER_KB = 10_000n;
+
+function mockFeeRateFromEnv(): bigint | null {
+  const raw = process.env.MOCK_FEE_RATE_BASE_UNITS_PER_KB;
+  if (raw === undefined || raw === '') return DEFAULT_MOCK_FEE_RATE_BASE_UNITS_PER_KB;
+  if (raw.trim() === 'null') return null;
+  try {
+    const parsed = BigInt(raw.trim());
+    return parsed >= 0n ? parsed : DEFAULT_MOCK_FEE_RATE_BASE_UNITS_PER_KB;
+  } catch {
+    return DEFAULT_MOCK_FEE_RATE_BASE_UNITS_PER_KB;
+  }
+}
+
+/**
  * In-memory Ravencoin node for development and demos. Implements the same
  * RvnNode interface as the real RPC client, so the API can't tell them apart.
  * No chain, no network, no funds — pure state machine.
@@ -34,10 +61,11 @@ function mockRvnBalanceFromEnv(): bigint {
  * the total issued balance covers it, and a supply-creating op succeeds
  * iff the mock wallet can pay the issuance fee. The wallet's RVN
  * balance starts at MOCK_RVN_BALANCE_BASE_UNITS (default 1,000,000 RVN)
- * and is debited by the issuance fee on every issue / reissue /
- * sub-asset / unique-asset call, so a simulation that says "funded"
- * executes, and one that says "insufficient RVN" fails the same way
- * for real.
+ * and is debited by the issuance fee plus the estimated miner fee on
+ * every issue / reissue / sub-asset / unique-asset call (v0.39.0), and
+ * by the estimated miner fee on every transfer — a failed call charges
+ * no fee, and a low-RVN mock refuses an issue the same way the
+ * simulation predicts.
  */
 export class MockRvnNode implements RvnNode {
   private assets = new Map<string, AssetInfo & { balances: Map<string, bigint> }>();
@@ -45,10 +73,23 @@ export class MockRvnNode implements RvnNode {
   private blocks = 3_100_000;
   private nextAddr = 1;
   private rvnBalance = mockRvnBalanceFromEnv();
+  private feeRate = mockFeeRateFromEnv();
 
-  /** Debit the issuance fee, or throw exactly as ravend would when the wallet cannot pay it. */
+  /** Estimated miner fee for an op at this mock's fee rate; 0 when the rate is unestimable — the check degrades to fee-only, so execution must too. */
+  private minerFeeFor(kind: 'issue_asset' | 'reissue_asset' | 'issue_subasset' | 'issue_unique' | 'transfer_asset'): bigint {
+    if (this.feeRate === null) return 0n;
+    return BigInt(estimateMinerFeeBaseUnits(kind, this.feeRate.toString()));
+  }
+
+  /**
+   * Debit the issuance fee plus the estimated miner fee, or throw
+   * exactly as ravend would when the wallet cannot pay it. The funding
+   * check estimates the same total, so a simulation that says "funded"
+   * executes and one that says "insufficient RVN" fails the same way
+   * for real — including a wallet holding exactly the issuance fee.
+   */
   private payIssuanceFee(kind: keyof typeof ISSUANCE_FEE_BASE_UNITS, op: string): void {
-    const fee = ISSUANCE_FEE_BASE_UNITS[kind];
+    const fee = ISSUANCE_FEE_BASE_UNITS[kind] + this.minerFeeFor(kind);
     if (this.rvnBalance < fee) {
       throw new Error(
         `insufficient RVN balance for ${op} fee (needs ${fee}, wallet holds ${this.rvnBalance})`,
@@ -108,6 +149,16 @@ export class MockRvnNode implements RvnNode {
     if (!asset) throw new Error(`unknown asset ${name}`);
     const amount = BigInt(qty);
     if (amount <= 0n) throw new Error('qty must be positive');
+    // The miner fee is paid in RVN: check the wallet can cover it
+    // before moving any asset, so a failed transfer charges nothing —
+    // the funding check requires the same RVN, so check and execution
+    // agree here too.
+    const minerFee = this.minerFeeFor('transfer_asset');
+    if (this.rvnBalance < minerFee) {
+      throw new Error(
+        `insufficient RVN balance for transfer miner fee (needs ${minerFee}, wallet holds ${this.rvnBalance})`,
+      );
+    }
     // Debit the issuer's first address holding enough (mock simplification:
     // debit from wherever the balance lives, preferring the first holder).
     let remaining = amount;
@@ -120,6 +171,7 @@ export class MockRvnNode implements RvnNode {
     if (remaining > 0n) throw new Error(`insufficient ${name} balance`);
     this.addresses.add(toAddress);
     asset.balances.set(toAddress, (asset.balances.get(toAddress) ?? 0n) + amount);
+    this.rvnBalance -= minerFee;
     this.blocks += 1;
     return `mock-txid-${randomUUID()}`;
   }
@@ -247,6 +299,10 @@ export class MockRvnNode implements RvnNode {
 
   async getRvnBalance(): Promise<string> {
     return this.rvnBalance.toString();
+  }
+
+  async estimateFeeRateBaseUnitsPerKb(): Promise<string | null> {
+    return this.feeRate === null ? null : this.feeRate.toString();
   }
 
   async listWalletBalances(): Promise<WalletBalances> {

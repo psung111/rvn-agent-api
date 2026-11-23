@@ -212,6 +212,35 @@ export class RvnRpcClient implements RvnNode {
   }
 
   /**
+   * Confirmation target for the fee estimate: 6 blocks — a balance
+   * between prompt confirmation and a stable rate. The estimate is
+   * advisory (the funding check degrades to fee-only without it), so
+   * the target is a constant, not operator policy.
+   */
+  async estimateFeeRateBaseUnitsPerKb(): Promise<string | null> {
+    // ravend's estimatesmartfee returns { feerate, blocks } with the
+    // rate in RVN per kilobyte, or an RPC error when the node has too
+    // little fee data; some versions answer feerate -1 with an errors
+    // list instead. Any of those means "cannot estimate" — null, never
+    // a throw — so the funding check degrades to fee-only. NOTE: this
+    // path is implemented against the documented RPC shape and is not
+    // verified against a live ravend on this VM (no live node here) —
+    // the mock leg and the stubbed-fetch units in `pnpm test:miner-fee`
+    // are what the suite exercises.
+    try {
+      const r = await this.call<{ feerate?: number; blocks?: number; errors?: string[] }>(
+        'estimatesmartfee',
+        [6],
+      );
+      if (!r || (Array.isArray(r.errors) && r.errors.length > 0)) return null;
+      if (typeof r.feerate !== 'number' || !(r.feerate > 0)) return null;
+      return decimalToBaseUnits(r.feerate, 8);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Wallet balances: RVN plus every asset the wallet holds, via
    * `listmyassets` (verbose) + `getbalance`. A plain-number entry
    * falls back to `getassetdata` for the units, like getAssetBalance.
