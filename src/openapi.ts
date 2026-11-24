@@ -45,7 +45,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.39.0',
+    version: '0.40.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -1344,6 +1344,14 @@ export const openApiDocument = {
           ok: { type: 'boolean', const: true },
           mock: { type: 'boolean', description: 'True when the mock node is in use (MOCK_RVN=true).' },
           store: { type: 'string', enum: ['memory', 'postgres'] },
+          chain: {
+            type: 'string',
+            description:
+              'Chain the node reports from getblockchaininfo (mock / test / regtest / main). ' +
+              'The mainnet guardrail (v0.40.0) refuses to boot against main unless RVN_ALLOW_MAINNET=true.',
+          },
+          blocks: { type: 'integer', description: 'Block height the node reports.' },
+          connections: { type: 'integer', description: 'Peer connections the node reports.' },
           migrations: { type: 'array', items: { type: 'string' }, description: 'Applied migration versions ([] on the memory store).' },
           auth: {
             type: 'object',

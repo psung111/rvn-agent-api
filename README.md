@@ -322,6 +322,13 @@ stay disabled. `/v1/health` reports `webhooks.configured`. Verify with
 4. Verify RPC shapes against your node: `ravend help issue` — parameter order matters
    and varies slightly across versions; see `src/rvn/client.ts`.
 
+Mainnet guardrail: at boot the API asks the node for its chain and refuses
+to start against `main` unless `RVN_ALLOW_MAINNET=true` is set explicitly —
+a misconfigured RPC URL fails loudly at startup instead of moving real
+funds. `/v1/health` reports the chain (`chain` / `blocks` / `connections`).
+Verify with `pnpm test:guardrail`, which exercises the refusal against a
+mock node reporting `main` (`MOCK_CHAIN=main`).
+
 ## Persistence
 
 By default everything (policies, intents, decisions, issue ledger, audit

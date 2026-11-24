@@ -51,6 +51,20 @@ function mockFeeRateFromEnv(): bigint | null {
 }
 
 /**
+ * Chain the mock reports from `getInfo()` (v0.40.0): 'mock' by default,
+ * overridable with MOCK_CHAIN — set it to 'main' to exercise the
+ * mainnet guardrail against the mock, or to 'test' / 'regtest' to
+ * rehearse a live-node boot. An empty or whitespace-only value falls
+ * back to 'mock', never a startup crash.
+ */
+function mockChainFromEnv(): string {
+  const raw = process.env.MOCK_CHAIN;
+  if (raw === undefined) return 'mock';
+  const chain = raw.trim();
+  return chain === '' ? 'mock' : chain;
+}
+
+/**
  * In-memory Ravencoin node for development and demos. Implements the same
  * RvnNode interface as the real RPC client, so the API can't tell them apart.
  * No chain, no network, no funds — pure state machine.
@@ -74,6 +88,7 @@ export class MockRvnNode implements RvnNode {
   private nextAddr = 1;
   private rvnBalance = mockRvnBalanceFromEnv();
   private feeRate = mockFeeRateFromEnv();
+  private chain = mockChainFromEnv();
 
   /** Estimated miner fee for an op at this mock's fee rate; 0 when the rate is unestimable — the check degrades to fee-only, so execution must too. */
   private minerFeeFor(kind: 'issue_asset' | 'reissue_asset' | 'issue_subasset' | 'issue_unique' | 'transfer_asset'): bigint {
@@ -106,7 +121,7 @@ export class MockRvnNode implements RvnNode {
   }
 
   async getInfo(): Promise<ChainInfo> {
-    return { chain: 'mock', blocks: this.blocks, connections: 0 };
+    return { chain: this.chain, blocks: this.blocks, connections: 0 };
   }
 
   async getNewAddress(): Promise<string> {

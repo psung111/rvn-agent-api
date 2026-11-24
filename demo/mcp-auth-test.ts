@@ -186,8 +186,8 @@ async function main() {
         protocolVersion: '2024-11-05',
         clientInfo: { name: 'mcp-auth-test', version: '0.1.0' },
       });
-      check('initialize reports server version 0.39.0',
-        init.result?.serverInfo?.version === '0.39.0', init.result?.serverInfo);
+      check('initialize reports server version 0.40.0',
+        init.result?.serverInfo?.version === '0.40.0', init.result?.serverInfo);
       keyed.child.stdin!.write(
         `${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`,
       );

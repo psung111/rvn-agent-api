@@ -69,6 +69,7 @@ import { parseCallbackData, formatResolvedMessage, type CallbackAction } from '.
 import { TelegramApi } from './approvals/telegram-api.js';
 import { MockRvnNode } from './rvn/mock.js';
 import { RvnRpcClient } from './rvn/client.js';
+import { checkChainGuardrail, mainnetAllowedFromEnv, MainnetGuardrailError } from './rvn/guardrail.js';
 import type { RvnNode } from './rvn/types.js';
 
 const MOCK = process.env.MOCK_RVN !== 'false';
@@ -1705,6 +1706,27 @@ async function main() {
   // Sweep once at boot: holds that aged while the server was down alert
   // promptly instead of waiting a full interval.
   void checkHoldAgingOnce();
+
+  // Mainnet guardrail (v0.40.0): refuse to boot against a mainnet chain
+  // unless RVN_ALLOW_MAINNET=true is set explicitly. The check runs
+  // before the server listens, so a misconfigured RPC URL fails loudly
+  // at startup instead of moving real funds. A node that cannot answer
+  // leaves the chain unverified — logged loudly — and the API still
+  // boots: an unreachable node cannot move funds, and submits against
+  // it fail with 502. The mock reports chain 'mock' (or MOCK_CHAIN),
+  // so the demo loop is unaffected.
+  const allowMainnet = mainnetAllowedFromEnv();
+  try {
+    const info = await node.getInfo();
+    checkChainGuardrail(info.chain, allowMainnet);
+    app.log.info(`node chain: ${info.chain} (${info.blocks} blocks)`);
+  } catch (err) {
+    if (err instanceof MainnetGuardrailError) throw err;
+    app.log.warn(
+      { err },
+      'mainnet guardrail: could not read the node chain — cannot verify the node is not mainnet',
+    );
+  }
 
   await app.listen({ port: PORT, host: '127.0.0.1' });
 }

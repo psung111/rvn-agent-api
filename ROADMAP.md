@@ -1044,12 +1044,35 @@ and logs the result in CHANGELOG.md.
   `pnpm mcp-smoke`, and every `test:*` suite still green. The
   miner-fee estimation item is complete; the next top item is the
   mainnet guardrail.
-- [ ] **Mainnet guardrail** — "never touch mainnet" is a hard rule but
-  today it rests on the operator pointing the API at the right node.
-  Refuse to boot against a mainnet chain (`getblockchaininfo` chain
-  `main`) unless an explicit `RVN_ALLOW_MAINNET=true` is set, and
-  report the chain on `/v1/health`, so a misconfigured RPC URL fails
-  loudly at startup instead of moving real funds.
+- [x] 2026-11-24 — v0.40.0 Mainnet guardrail (item complete): "never
+  touch mainnet" no longer rests on the operator pointing the API at
+  the right node. New `src/rvn/guardrail.ts` —
+  `mainnetAllowedFromEnv()` (only the literal `RVN_ALLOW_MAINNET=true`
+  opts in, like `RVN_AUTH_ENABLED`), `isMainnetChain()`, and
+  `checkChainGuardrail()` (throws a named `MainnetGuardrailError` on
+  chain `main` without the opt-in). The server asks the node for its
+  chain (`getblockchaininfo` via the existing `getInfo()` seam) before
+  it listens, and a mainnet chain without the opt-in stops the process
+  with exit 1 before any route is served; a node that cannot answer
+  leaves the chain unverified — logged loudly — and the API still
+  boots, since an unreachable node cannot move funds and submits
+  against it fail with 502. The mock reports chain `mock` by default
+  (overridable with `MOCK_CHAIN`, so the refusal is exercisable without
+  a live node), and `/v1/health` reports the chain (`chain` / `blocks` /
+  `connections`, already spread from `getInfo()` — now also documented
+  in the OpenAPI `Health` schema). `initialize` now reports server
+  version 0.40.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README "Going live" section gained
+  the guardrail. Verified with new `pnpm test:guardrail`
+  (`demo/guardrail-test.ts`, 36 checks: env parsing incl. the
+  exact-'true' rule, the check function and its error message, the
+  mock's `MOCK_CHAIN` handling, and booted-API integrations — a mainnet
+  mock without the opt-in exits 1 with health never answering, the
+  same mock with the opt-in boots and reports chain `main`, a testnet
+  mock reports `test`, and the default mock reports `mock`); `pnpm
+  demo`, `pnpm mcp-smoke`, and every `test:*` suite still green. The
+  mainnet guardrail item is complete; the next top item is per-agent
+  wallets.
 - [ ] **Per-agent wallets** — the API has one node wallet shared by
   every agent, so one agent's issue fee or transfer drains the same
   balance every other agent simulates against. Give each agent its own

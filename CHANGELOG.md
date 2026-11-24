@@ -1,5 +1,65 @@
 # Changelog
 
+## 2026-11-24 — v0.40.0 (Mainnet guardrail, item complete)
+
+- Mainnet guardrail: "never touch mainnet" no longer rests on the
+  operator pointing the API at the right node. New
+  `src/rvn/guardrail.ts` — `mainnetAllowedFromEnv()` (only the literal
+  `RVN_ALLOW_MAINNET=true` opts in, like `RVN_AUTH_ENABLED`, so a
+  half-set env var can never silently open mainnet), `isMainnetChain()`,
+  and `checkChainGuardrail()` (throws a named `MainnetGuardrailError`
+  on chain `main` without the opt-in). The server asks the node for its
+  chain (`getblockchaininfo` via the existing `getInfo()` seam) before
+  it listens, and a mainnet chain without the opt-in stops the process
+  with exit 1 before any route is served — a misconfigured RPC URL
+  fails loudly at startup instead of moving real funds. A node that
+  cannot answer leaves the chain unverified (logged loudly) and the API
+  still boots: an unreachable node cannot move funds, and submits
+  against it fail with 502. The mock reports chain `mock` by default,
+  overridable with `MOCK_CHAIN` so the refusal is exercisable without a
+  live node; `/v1/health` reports the chain (`chain` / `blocks` /
+  `connections`, already spread from `getInfo()` — now also documented
+  in the OpenAPI `Health` schema). No new route or tool: the guardrail
+  is a boot-time check, and the adapters keep the "cover every route"
+  invariant unchanged.
+- `initialize` now reports server version 0.40.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`); README "Going live"
+  section gained the guardrail.
+- New `pnpm test:guardrail` (`demo/guardrail-test.ts`, 36 checks): env
+  parsing incl. the exact-'true' rule, the check function and its error
+  message, the mock's `MOCK_CHAIN` handling (default `mock`, `main` /
+  `test` pass through, empty/whitespace falls back), and booted-API
+  integrations — a mainnet mock without the opt-in exits 1 with
+  `/v1/health` never answering and the refusal naming the guardrail and
+  `RVN_ALLOW_MAINNET=true` on stderr, the same mock with the opt-in
+  boots and reports chain `main`, a testnet mock reports `test`, and
+  the default mock reports `mock` with a block height. `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`,
+  `pnpm test:hold-aging`, `pnpm test:policy-history`,
+  `pnpm test:funding`, `pnpm test:funding-gate`,
+  `pnpm test:miner-fee`, `pnpm test:wallet`,
+  `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:guardrail` script. No
+  local Postgres on this VM, so the Postgres live legs were skipped
+  (as in recent sessions); the guardrail needs no migration. The
+  real-node `getblockchaininfo` path is the existing `getInfo()` seam,
+  unchanged — the mock leg and the booted-API integrations are what
+  the suite exercises.
+- The mainnet guardrail item is complete; the next top item is
+  per-agent wallets.
+
 ## 2026-11-23 — v0.39.0 (Miner-fee estimation in the funding check, item complete)
 
 - Miner-fee estimation in the funding check: the v0.36.0 check covered
