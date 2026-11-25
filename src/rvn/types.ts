@@ -20,6 +20,14 @@ export interface ChainInfo {
 export interface RvnNode {
   getInfo(): Promise<ChainInfo>;
   getNewAddress(label?: string): Promise<string>;
+  /**
+   * `fromAddress` (v0.41.0) is the agent wallet the issuance fee and the
+   * estimated miner fee are debited from. The mock debits that address
+   * (seeded on provisioning); the real client ignores it — ravend pays
+   * fees from the wallet UTXO pool regardless of address, so per-agent
+   * isolation on a real node is enforced at the funding-check layer,
+   * not at execution. Omit it and the mock debits its operator address.
+   */
   issueAsset(opts: {
     name: string;
     qty: string;
@@ -27,8 +35,9 @@ export interface RvnNode {
     units?: number;
     reissuable?: boolean;
     ipfsHash?: string;
+    fromAddress?: string;
   }): Promise<string>; // txid
-  transferAsset(assetName: string, qty: string, toAddress: string): Promise<string>; // txid
+  transferAsset(assetName: string, qty: string, toAddress: string, fromAddress?: string): Promise<string>; // txid
   reissueAsset(opts: {
     name: string;
     qty: string;
@@ -36,6 +45,7 @@ export interface RvnNode {
     reissuable?: boolean;
     newUnits?: number;
     newIpfsHash?: string;
+    fromAddress?: string;
   }): Promise<string>; // txid
   /**
    * Issue a sub-asset: name is PARENT[/CHILD...] and the immediate parent
@@ -50,6 +60,7 @@ export interface RvnNode {
     units?: number;
     reissuable?: boolean;
     ipfsHash?: string;
+    fromAddress?: string;
   }): Promise<string>; // txid
   /**
    * Issue a unique asset: name is ROOT#TAG and the root asset must already
@@ -62,6 +73,7 @@ export interface RvnNode {
     name: string;
     toAddress: string;
     ipfsHash?: string;
+    fromAddress?: string;
   }): Promise<string>; // txid
   listAssets(pattern?: string): Promise<AssetInfo[]>;
   getAssetData(name: string): Promise<AssetInfo | null>;
@@ -72,9 +84,15 @@ export interface RvnNode {
    * included). `getRvnBalance` is the wallet's RVN balance in base
    * units (1 RVN = 10^8). Both are read-only: simulate calls them and
    * never moves funds.
+   *
+   * `getRvnBalance(address)` (v0.41.0) scopes the RVN read to one
+   * agent's wallet address — the mock reads that address's balance
+   * ('0' when the mock knows nothing about it), the real client sums
+   * the address's UTXOs via `listunspent`. Omit the address for the
+   * wallet-wide balance, as before.
    */
   getAssetBalance(assetName: string): Promise<string | null>;
-  getRvnBalance(): Promise<string>;
+  getRvnBalance(address?: string): Promise<string>;
 
   /**
    * Current fee rate in RVN base units per kilobyte, via
@@ -93,8 +111,12 @@ export interface RvnNode {
    * simulating an intent for each asset. Read-only. Only assets with a
    * nonzero wallet balance are listed — an asset fully transferred out
    * disappears from the list (same as ravend's `listmyassets`).
+   *
+   * `listWalletBalances(address)` (v0.41.0) scopes the RVN balance to
+   * one agent's wallet address; the asset list stays wallet-wide until
+   * per-address asset balances land (slice 2 of per-agent wallets).
    */
-  listWalletBalances(): Promise<WalletBalances>;
+  listWalletBalances(address?: string): Promise<WalletBalances>;
 }
 
 /** One asset balance in the wallet, in base units (decimal string). */

@@ -47,8 +47,11 @@ async function main() {
   const health = await get('/v1/health');
   console.log('health:', JSON.stringify(health));
 
-  const { address } = (await post('/v1/wallets', {}, 200)).json;
-  console.log('provisioned agent wallet:', address);
+  // Per-agent wallet (v0.41.0): agent-1's stable wallet address, minted
+  // on first call and tracked afterwards — funding checks and fee
+  // debiting use it, so the demo's issues draw on agent-1's own RVN.
+  const { address } = (await get('/v1/wallet/address/agent-1'));
+  console.log('agent-1 wallet address:', address);
 
   console.log('--- 0. allowlist the agent wallet in policy ---');
   const policy = await get('/v1/policies/agent-1');

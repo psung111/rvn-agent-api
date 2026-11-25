@@ -385,12 +385,23 @@ class RvnApiClient:
         store backend."""
         return self._call("GET", "/v1/metrics")
 
-    def get_wallet_balances(self) -> dict[str, Any]:
+    def get_wallet_balances(self, agent_id: Optional[str] = None) -> dict[str, Any]:
         """Read-only wallet balances: the wallet's RVN balance plus every
         asset balance it holds (nonzero only), so an agent can see what
         the wallet can fund without simulating an intent for each asset.
-        All quantities are decimal strings in base units."""
-        return self._call("GET", "/v1/wallet/balances")
+        All quantities are decimal strings in base units. With agent_id
+        the RVN figure is that agent's own wallet balance (v0.41.0);
+        the asset list stays wallet-wide."""
+        query = {"agentId": agent_id} if agent_id else None
+        return self._call("GET", "/v1/wallet/balances", query=query)
+
+    def get_wallet_address(self, agent_id: Optional[str] = None) -> dict[str, Any]:
+        """Read an agent's stable wallet address (v0.41.0): minted from
+        the node on first call and tracked afterwards — the same address
+        on every call. Funding checks and fee debiting use this address,
+        so one agent cannot spend another's RVN."""
+        agent = agent_id or self.agent_id
+        return self._call("GET", f"/v1/wallet/address/{urllib.parse.quote(agent)}")
 
     def get_openapi(self) -> dict[str, Any]:
         """Read the API's OpenAPI 3.0.3 contract: every route, decision

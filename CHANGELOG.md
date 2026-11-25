@@ -1,5 +1,112 @@
 # Changelog
 
+## 2026-11-25 — v0.41.0 (Per-agent wallets, slice 1 — item partial)
+
+- Per-agent wallet addresses + per-agent RVN funding: the API no longer
+  runs every agent against one shared wallet balance for fees. New
+  `src/rvn/wallets.ts` — `getOrCreateWalletAddress()` mints an agent's
+  stable wallet address from the node on first use (label
+  `rvn-agent-api:<agentId>`), records it in the store, and returns the
+  same address on every later call; a mint or store failure throws
+  instead of returning a half-provisioned address, so the next call
+  retries cleanly. `getWalletAddress()` is the read-only half — it
+  never provisions, so simulate stays side-effect-free. New `wallets`
+  seam on the `Store` interface (memory + Postgres behind migration
+  `0007_agent_wallets`); `GET /v1/wallet/address/:agentId` exposes the
+  address (per-agent binding under auth, 502 when the node or store
+  cannot be trusted), and `GET /v1/wallet/balances?agentId=` scopes
+  the RVN figure to that agent while the asset list stays wallet-wide.
+  The funding check's RVN legs now read the submitting agent's own
+  wallet address (submit, approval-time gate, and simulate when an
+  address is already tracked), and execution debits the issuance/miner
+  fee from the same address — so on a 600 RVN mock, agent-1 issuing
+  once and then DENYing its second issue does not stop agent-2
+  issuing from its own untouched 600 RVN. A wallet-layer failure (node
+  down, store error) degrades to the wallet-wide check and the old
+  execution path instead of failing a decision the policy engine
+  already made.
+- Node seam: `getRvnBalance` / `listWalletBalances` take an optional
+  address, and all five execution methods take an optional
+  `fromAddress`. The mock tracks RVN per address — an operator seed at
+  construction (the old shared balance, so a fresh mock still reports
+  1,000,000 RVN wallet-wide), each agent-labelled address seeded with
+  `MOCK_RVN_BALANCE_BASE_UNITS` on mint like a faucet, throwaway
+  addresses unseeded, and the wallet-wide total is the sum of the
+  seeded addresses — and debits fees from the issuing agent's address
+  (or the operator address when no fromAddress is given, so direct
+  node calls keep their previous behavior). The real client reads
+  per-address RVN by summing the address's UTXOs (`listunspent`) and
+  per-address assets via `listassetbalancesbyaddress`, and ignores
+  `fromAddress` at execution: ravend pays fees from the wallet UTXO
+  pool regardless of address, so on a real node the funding check is
+  the enforcement point — true wallet separation (a ravend wallet per
+  agent) is a follow-up, as are per-address asset balances (the
+  funding check's asset leg and the transfer debit still read the
+  wallet-wide ledger in this slice).
+- Adapters keep the "cover every route" invariant: new
+  `get_wallet_address` MCP tool and LangChain client method + tool
+  (`langchain_rvn` now builds 27 tools), and `get_wallet_balances`
+  takes an optional agent id on both. `initialize` now reports server
+  version 0.41.0 (`src/mcp.ts`, `package.json`,
+  `langchain_rvn/pyproject.toml`); README route table gained the
+  address row and a new "Per-agent wallets" section; the OpenAPI spec
+  gained the route plus the balances `agentId` query parameter (the
+  drift test covers it).
+- New `pnpm test:wallets` (`demo/per-agent-wallet-test.ts`, 38 checks):
+  mock per-address units (operator seed, agent-label seeding,
+  throwaways unseeded, per-address fee debiting and isolation, the
+  100 RVN refusal naming the balance), wallets-module units (stable
+  per agent, distinct across agents, label passed to the node, blank
+  ids and empty node replies throw, a failed store write leaves
+  nothing half-provisioned and retries cleanly), real-client
+  stubbed-fetch units (listunspent sums, the
+  listassetbalancesbyaddress leg), and booted-API integrations —
+  stable/distinct addresses, simulate provisions nothing (the
+  wallet-wide total unmoved), per-agent balances with the wallet-wide
+  sum, the 600 RVN funding-isolation proof, and the auth-on binding
+  leg (keyless 401, per-agent key reads its own address/balances and
+  403s on another's, operator reads any). `pnpm test:store` gained
+  wallets-seam checks (both backends); `demo/migration-test.ts` and
+  `demo/partition-test.ts` updated for migration 0007 (including two
+  stale reconnect expectations that encoded the wrong count);
+  `demo/mcp-smoke.ts` gained a `get_wallet_address` section (28) and
+  its balances section now reads agent-scoped; `pnpm test:langchain`
+  updated (27 tools, client + tool address shape);
+  `demo/wallet-test.ts` updated to the new semantics (the agent-scoped
+  read carries the exact fee assertions; the wallet-wide total is now
+  the operator seed plus the agent's balance). `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`,
+  `pnpm test:hold-aging`, `pnpm test:policy-history`,
+  `pnpm test:funding`, `pnpm test:funding-gate`,
+  `pnpm test:miner-fee`, `pnpm test:wallet`,
+  `pnpm test:guardrail`, `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:wallets` script. No
+  local Postgres on this VM, so the Postgres live legs were skipped
+  (as in recent sessions); the migration is validated by the fake-pool
+  runner in `pnpm test:migrations` and the new seam by the shared
+  store-suite checks. The real-node `listunspent` /
+  `listassetbalancesbyaddress` paths are implemented against the
+  documented RPC shapes and are NOT verified against a live ravend (no
+  live node here) — the mock leg and the stubbed-fetch units are what
+  the suite exercises. One harness note: the wallets suite failed once
+  in the first back-to-back sweep run on a port collision and passed on
+  every re-run — no product code at fault.
+- Remainder of the per-agent wallets item: per-address asset balances
+  (funding check asset leg + transfer debit) and per-agent ravend
+  wallets on a real node.
+
 ## 2026-11-24 — v0.40.0 (Mainnet guardrail, item complete)
 
 - Mainnet guardrail: "never touch mainnet" no longer rests on the

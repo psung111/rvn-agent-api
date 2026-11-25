@@ -1079,6 +1079,55 @@ and logs the result in CHANGELOG.md.
   wallet address (derived from the node, tracked per agentId), so
   funding checks and execution are per-agent and one agent cannot
   spend another's funds.
+  - [x] 2026-11-25 — v0.41.0 per-agent wallet addresses + per-agent RVN
+    funding (slice 1, item partial): new `src/rvn/wallets.ts` —
+    `getOrCreateWalletAddress()` (stable per agent, labelled
+    `rvn-agent-api:<agentId>`, minted from the node on first call and
+    recorded in the store; a mint/store failure throws, so nothing is
+    ever half-provisioned) and read-only `getWalletAddress()` (never
+    provisions — simulate stays side-effect-free). New `wallets` seam
+    on the `Store` interface (memory + Postgres, migration
+    `0007_agent_wallets`). The node seam gained an optional `address`
+    on `getRvnBalance` / `listWalletBalances` and an optional
+    `fromAddress` on all five execution methods: the mock tracks RVN
+    per address (an operator seed at construction, each agent-labelled
+    address seeded with `MOCK_RVN_BALANCE_BASE_UNITS` on mint like a
+    faucet, throwaway addresses unseeded; the wallet-wide total is the
+    sum) and debits issuance/miner fees from the issuing agent's
+    address, so check and execution agree per agent; the real client
+    reads per-address RVN via `listunspent` sums and per-address
+    assets via `listassetbalancesbyaddress` (implemented against the
+    documented RPC shapes, not verified against a live ravend), and
+    ignores `fromAddress` at execution — ravend pays fees from the
+    wallet pool, so on a real node the funding check is the
+    enforcement point. The server resolves the agent's address once
+    per submit/approval (degrading to the wallet-wide check on a
+    wallet-layer failure, never failing the decision) and passes it to
+    `checkFunding` and execution; simulate reads it read-only and
+    falls back wallet-wide when the agent has none. New
+    `GET /v1/wallet/address/:agentId` (stable, per-agent binding under
+    auth) and `?agentId=` on `GET /v1/wallet/balances` (agent RVN
+    scoped, assets wallet-wide). New `get_wallet_address` MCP tool
+    and LangChain client method + tool (27 tools now); `get_wallet_balances`
+    takes an optional agent id on both adapters. Verified with new
+    `pnpm test:wallets` (`demo/per-agent-wallet-test.ts`, 38 checks:
+    mock per-address units incl. the 100 RVN refusal, wallets-module
+    units incl. the failed-provision retry, real-client stubbed-fetch
+    units, and booted-API integrations — stable/distinct addresses,
+    simulate provisions nothing, per-agent balances with the wallet-wide
+    sum, the 600 RVN funding-isolation proof (agent-1 drains, DENYs,
+    agent-2 still ALLOWs), and the auth-on binding leg), new wallets
+    seam checks in `pnpm test:store` (both backends), migration/
+    partition test updates for 0007, an MCP smoke section (28), and
+    `pnpm test:langchain` (27 tools, client + tool address shape);
+    demo, mcp-smoke, approvals, telegram-callback, simulate, reissue,
+    subasset, unique, presets, anomaly, store, archive, migrations,
+    partition, webhooks, ratelimit, metrics, quorum, auth, mcp-auth,
+    openapi, docs, hold-aging, policy-history, funding, funding-gate,
+    miner-fee, wallet, guardrail suites still green. Remainder:
+    per-address asset balances (the funding check's asset leg and the
+    transfer debit, so an agent cannot transfer another agent's
+    assets) and per-agent ravend wallets on a real node.
 
 ## Done
 

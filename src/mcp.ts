@@ -386,11 +386,28 @@ const TOOLS: ToolDef[] = [
       'Read the wallet\'s balances (GET /v1/wallet/balances): the RVN balance plus every asset ' +
       'balance the wallet holds, so an operator or monitoring agent can see what the wallet can ' +
       'fund without simulating an intent for each asset. Only assets with a nonzero wallet balance ' +
-      'are listed. All quantities are decimal strings in base units. Read-only — polling it writes ' +
+      'are listed. All quantities are decimal strings in base units. With agentId, the RVN figure ' +
+      'is that agent\'s own wallet balance (v0.41.0); the asset list stays wallet-wide. Read-only — polling it writes ' +
       'nothing, so it cannot change what the next submit sees.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        agentId: { type: 'string', description: 'Agent whose wallet RVN balance to read (omit for the wallet-wide balance)' },
+      },
+    },
+  },
+  {
+    name: 'get_wallet_address',
+    description:
+      'Read an agent\'s stable wallet address (GET /v1/wallet/address/:agentId, v0.41.0): minted ' +
+      'from the node on first call and tracked in the store afterwards — the same address on ' +
+      'every call. Funding checks and fee debiting use this address, so one agent cannot spend ' +
+      'another\'s RVN. Read-only in the funds sense: provisioning the address moves no funds.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Agent identity (default agent-1)' },
+      },
     },
   },
   {
@@ -679,7 +696,16 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<To
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
     case 'get_wallet_balances': {
-      const { status, body } = await api('/v1/wallet/balances');
+      const agentId = typeof args.agentId === 'string' && args.agentId ? args.agentId : undefined;
+      const path = agentId === undefined
+        ? '/v1/wallet/balances'
+        : `/v1/wallet/balances?agentId=${encodeURIComponent(agentId)}`;
+      const { status, body } = await api(path);
+      return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
+    }
+    case 'get_wallet_address': {
+      const agentId = typeof args.agentId === 'string' && args.agentId ? args.agentId : 'agent-1';
+      const { status, body } = await api(`/v1/wallet/address/${encodeURIComponent(agentId)}`);
       return textResult({ httpStatus: status, ...((body ?? {}) as object) }, status >= 400);
     }
     case 'list_assets': {
@@ -743,7 +769,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.40.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.41.0' },
       });
     }
     case 'notifications/initialized':

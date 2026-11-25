@@ -79,6 +79,13 @@ export class RvnRpcClient implements RvnNode {
     units?: number;
     reissuable?: boolean;
     ipfsHash?: string;
+    /**
+     * Ignored on the real client: ravend pays the issuance fee from the
+     * wallet UTXO pool regardless of address, so per-agent isolation on
+     * a real node is enforced at the funding-check layer, not at
+     * execution (see getRvnBalance). The mock debits it (v0.41.0).
+     */
+    fromAddress?: string;
   }): Promise<string> {
     const units = opts.units ?? 0;
     const reissuable = opts.reissuable ?? true;
@@ -88,8 +95,9 @@ export class RvnRpcClient implements RvnNode {
     return this.call<string>('issue', params);
   }
 
-  async transferAsset(assetName: string, qty: string, toAddress: string): Promise<string> {
-    // transfer "asset_name" qty "to_address"
+  async transferAsset(assetName: string, qty: string, toAddress: string, _fromAddress?: string): Promise<string> {
+    // transfer "asset_name" qty "to_address" — the miner fee comes from
+    // the wallet pool; fromAddress is ignored here like on issue (see above).
     return this.call<string>('transfer', [assetName, Number(qty), toAddress]);
   }
 
@@ -100,6 +108,7 @@ export class RvnRpcClient implements RvnNode {
     reissuable?: boolean;
     newUnits?: number;
     newIpfsHash?: string;
+    fromAddress?: string;
   }): Promise<string> {
     // reissue "asset_name" qty "to_address" change_address reissuable new_units new_ipfs_hash
     // (params are positional: new_ipfs_hash can only be set when new_units is too)
@@ -118,6 +127,7 @@ export class RvnRpcClient implements RvnNode {
     units?: number;
     reissuable?: boolean;
     ipfsHash?: string;
+    fromAddress?: string;
   }): Promise<string> {
     // ravend issues sub-assets through the same `issue` RPC — the slash
     // name is what makes it a sub-asset, and ravend itself enforces that
@@ -129,6 +139,7 @@ export class RvnRpcClient implements RvnNode {
     name: string;
     toAddress: string;
     ipfsHash?: string;
+    fromAddress?: string;
   }): Promise<string> {
     // issueunique "root_name" ["tag", ...] "ipfs_hash" "to_address" "change_address"
     // — one tag per API call, so the tag list has a single entry. The tag
@@ -206,9 +217,26 @@ export class RvnRpcClient implements RvnNode {
   }
 
   /** Wallet RVN balance in base units (1 RVN = 10^8), via `getbalance`. */
-  async getRvnBalance(): Promise<string> {
-    const balance = await this.call<number>('getbalance');
-    return decimalToBaseUnits(balance, 8);
+  async getRvnBalance(address?: string): Promise<string> {
+    if (address === undefined) {
+      const balance = await this.call<number>('getbalance');
+      return decimalToBaseUnits(balance, 8);
+    }
+    // Per-agent wallet (v0.41.0): ravend has no per-address balance RPC,
+    // so sum the address's UTXOs via `listunspent` (minconf 1). The
+    // funding check reads this, so an agent whose address holds no RVN
+    // is refused even when the shared wallet is funded — the check is
+    // the enforcement point on a real node (the fee itself still comes
+    // from the wallet pool at execution). NOTE: implemented against the
+    // documented RPC shape and not verified against a live ravend on
+    // this VM (no live node here) — the mock leg is what the test suite
+    // exercises.
+    const utxos = await this.call<Array<{ amount: number }>>('listunspent', [1, 9999999, [address]]);
+    let total = 0n;
+    for (const utxo of utxos ?? []) {
+      total += BigInt(decimalToBaseUnits(utxo.amount, 8));
+    }
+    return total.toString();
   }
 
   /**
@@ -244,13 +272,30 @@ export class RvnRpcClient implements RvnNode {
    * Wallet balances: RVN plus every asset the wallet holds, via
    * `listmyassets` (verbose) + `getbalance`. A plain-number entry
    * falls back to `getassetdata` for the units, like getAssetBalance.
-   * Zero-balance entries are skipped, matching the mock. NOTE: this
-   * path is implemented against the documented RPC shapes and is not
-   * verified against a live ravend on this VM (no live node here) —
-   * the mock leg and the stubbed-fetch units in `pnpm test:wallet`
-   * are what the suite exercises.
+   * Zero-balance entries are skipped, matching the mock. With an
+   * address (v0.41.0) the RVN figure is that address's balance (via
+   * `listunspent`, see getRvnBalance) and the assets come from
+   * `listassetbalancesbyaddress`; the asset list is still wallet-wide
+   * in the no-address case. NOTE: this path is implemented against the
+   * documented RPC shapes and is not verified against a live ravend on
+   * this VM (no live node here) — the mock leg and the stubbed-fetch
+   * units in `pnpm test:wallet` are what the suite exercises.
    */
-  async listWalletBalances(): Promise<WalletBalances> {
+  async listWalletBalances(address?: string): Promise<WalletBalances> {
+    if (address !== undefined) {
+      const raw = await this.call<Record<string, number> | null>('listassetbalancesbyaddress', [address]);
+      const assets: WalletAssetBalance[] = [];
+      for (const [name, amount] of Object.entries(raw ?? {})) {
+        const data = await this.getAssetData(name);
+        if (!data) continue;
+        const balanceBaseUnits = decimalToBaseUnits(amount, data.units);
+        if (BigInt(balanceBaseUnits) > 0n) {
+          assets.push({ name, balanceBaseUnits, units: data.units });
+        }
+      }
+      assets.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      return { rvnBaseUnits: await this.getRvnBalance(address), assets };
+    }
     const raw = await this.call<Record<
       string,
       number | { amount: number; units: number }

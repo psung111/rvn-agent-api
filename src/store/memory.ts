@@ -4,7 +4,7 @@ import { defaultPolicy, InMemoryIssueLedger, pruneVersions } from '../policy/ind
 import type { PolicyVersion } from '../policy/history.js';
 import type { AuditEntry, AuditKind } from '../audit.js';
 import type { Decision, RvnIntent, RvnPolicy } from '../policy/index.js';
-import type { ApiKeyStore, AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
+import type { ApiKeyStore, AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store, WalletStore } from './types.js';
 
 class MemoryPolicyStore implements PolicyStore {
   private policies = new Map<string, RvnPolicy>([['*', defaultPolicy()]]);
@@ -139,6 +139,16 @@ class MemoryApiKeyStore implements ApiKeyStore {
   }
 }
 
+class MemoryWalletStore implements WalletStore {
+  private addresses = new Map<string, string>();
+  async get(agentId: string): Promise<string | undefined> {
+    return this.addresses.get(agentId);
+  }
+  async set(agentId: string, address: string): Promise<void> {
+    this.addresses.set(agentId, address);
+  }
+}
+
 /** Ephemeral backend: everything lives in process memory. */
 export class MemoryStore implements Store {
   readonly kind = 'memory' as const;
@@ -150,6 +160,7 @@ export class MemoryStore implements Store {
   readonly audit = new MemoryAuditStore();
   readonly ratelimits = new MemoryRateLimitStore();
   readonly apikeys = new MemoryApiKeyStore();
+  readonly wallets = new MemoryWalletStore();
   async close(): Promise<void> {
     // Nothing to release.
   }

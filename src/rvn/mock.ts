@@ -5,6 +5,7 @@ import {
   RVN_BASE_UNITS_PER_COIN,
 } from '../policy/funding.js';
 import type { AssetInfo, ChainInfo, RvnNode, WalletAssetBalance, WalletBalances } from './types.js';
+import { AGENT_WALLET_LABEL_PREFIX } from './wallets.js';
 
 /**
  * Default mock wallet RVN balance: 1,000,000 RVN — enough that the
@@ -69,26 +70,48 @@ function mockChainFromEnv(): string {
  * RvnNode interface as the real RPC client, so the API can't tell them apart.
  * No chain, no network, no funds — pure state machine.
  *
- * Wallet semantics (v0.36.0): the mock has no separate wallet — every
- * balance the ledger records is treated as wallet-held, which is what
- * makes the funding check agree with execution: a transfer succeeds iff
- * the total issued balance covers it, and a supply-creating op succeeds
- * iff the mock wallet can pay the issuance fee. The wallet's RVN
- * balance starts at MOCK_RVN_BALANCE_BASE_UNITS (default 1,000,000 RVN)
- * and is debited by the issuance fee plus the estimated miner fee on
- * every issue / reissue / sub-asset / unique-asset call (v0.39.0), and
- * by the estimated miner fee on every transfer — a failed call charges
- * no fee, and a low-RVN mock refuses an issue the same way the
- * simulation predicts.
+ * Wallet semantics (v0.36.0, per-agent since v0.41.0): RVN is tracked
+ * per address. The mock seeds one operator address at construction with
+ * MOCK_RVN_BALANCE_BASE_UNITS (default 1,000,000 RVN) — that is the old
+ * single shared balance, so a fresh mock still reports it wallet-wide
+ * and direct node calls without a fromAddress debit it. Each per-agent
+ * wallet address minted with the `rvn-agent-api:` label is seeded with
+ * the same default on mint, like a faucet, so an agent's funding check
+ * and fee debiting see its own balance and one agent cannot spend
+ * another's RVN. Throwaway addresses (POST /v1/wallets) are not
+ * seeded — they hold nothing. Asset balances are still wallet-wide:
+ * every balance the ledger records is treated as wallet-held (see
+ * getAssetBalance), which is what makes the funding check agree with
+ * execution for transfers; per-address asset balances are slice 2.
+ * The wallet-wide RVN read is the sum of every seeded address.
  */
 export class MockRvnNode implements RvnNode {
   private assets = new Map<string, AssetInfo & { balances: Map<string, bigint> }>();
   private addresses = new Set<string>();
   private blocks = 3_100_000;
   private nextAddr = 1;
-  private rvnBalance = mockRvnBalanceFromEnv();
   private feeRate = mockFeeRateFromEnv();
   private chain = mockChainFromEnv();
+  /** Per-address RVN balances; the operator address is seeded at construction. */
+  private rvnBalances = new Map<string, bigint>();
+  private operatorAddress: string;
+
+  constructor() {
+    this.operatorAddress = this.addr();
+    this.rvnBalances.set(this.operatorAddress, mockRvnBalanceFromEnv());
+  }
+
+  /** RVN balance of one address ('0' when the mock knows nothing about it). */
+  private rvnBalanceOf(address: string): bigint {
+    return this.rvnBalances.get(address) ?? 0n;
+  }
+
+  /** Wallet-wide RVN: the sum of every address the mock has seeded. */
+  private totalRvnBalance(): bigint {
+    let total = 0n;
+    for (const bal of this.rvnBalances.values()) total += bal;
+    return total;
+  }
 
   /** Estimated miner fee for an op at this mock's fee rate; 0 when the rate is unestimable — the check degrades to fee-only, so execution must too. */
   private minerFeeFor(kind: 'issue_asset' | 'reissue_asset' | 'issue_subasset' | 'issue_unique' | 'transfer_asset'): bigint {
@@ -97,20 +120,29 @@ export class MockRvnNode implements RvnNode {
   }
 
   /**
-   * Debit the issuance fee plus the estimated miner fee, or throw
-   * exactly as ravend would when the wallet cannot pay it. The funding
-   * check estimates the same total, so a simulation that says "funded"
+   * Debit the issuance fee plus the estimated miner fee from one
+   * address's RVN balance, or throw exactly as ravend would when the
+   * wallet cannot pay it. The funding check estimates the same total
+   * against the same address, so a simulation that says "funded"
    * executes and one that says "insufficient RVN" fails the same way
    * for real — including a wallet holding exactly the issuance fee.
+   * Without a fromAddress the operator address pays (the old shared
+   * pool), so direct node calls keep their previous behavior.
    */
-  private payIssuanceFee(kind: keyof typeof ISSUANCE_FEE_BASE_UNITS, op: string): void {
+  private payIssuanceFee(
+    kind: keyof typeof ISSUANCE_FEE_BASE_UNITS,
+    op: string,
+    fromAddress?: string,
+  ): void {
     const fee = ISSUANCE_FEE_BASE_UNITS[kind] + this.minerFeeFor(kind);
-    if (this.rvnBalance < fee) {
+    const address = fromAddress ?? this.operatorAddress;
+    const balance = this.rvnBalanceOf(address);
+    if (balance < fee) {
       throw new Error(
-        `insufficient RVN balance for ${op} fee (needs ${fee}, wallet holds ${this.rvnBalance})`,
+        `insufficient RVN balance for ${op} fee (needs ${fee}, wallet holds ${balance})`,
       );
     }
-    this.rvnBalance -= fee;
+    this.rvnBalances.set(address, balance - fee);
   }
 
   private addr(prefix = 'mtest'): string {
@@ -124,8 +156,17 @@ export class MockRvnNode implements RvnNode {
     return { chain: this.chain, blocks: this.blocks, connections: 0 };
   }
 
-  async getNewAddress(): Promise<string> {
-    return this.addr();
+  async getNewAddress(label = ''): Promise<string> {
+    const address = this.addr();
+    // Per-agent wallet addresses (v0.41.0) are funded on mint, like a
+    // faucet: the mock seeds each agent wallet with
+    // MOCK_RVN_BALANCE_BASE_UNITS so the demo and the tests never trip
+    // the fee check by accident. Throwaway addresses (POST /v1/wallets)
+    // carry any other label and are not seeded — they hold nothing.
+    if (label.startsWith(AGENT_WALLET_LABEL_PREFIX)) {
+      this.rvnBalances.set(address, mockRvnBalanceFromEnv());
+    }
+    return address;
   }
 
   async issueAsset(opts: {
@@ -135,6 +176,7 @@ export class MockRvnNode implements RvnNode {
     units?: number;
     reissuable?: boolean;
     ipfsHash?: string;
+    fromAddress?: string;
   }): Promise<string> {
     const name = opts.name.toUpperCase();
     if (this.assets.has(name)) throw new Error(`asset ${name} already exists`);
@@ -144,7 +186,7 @@ export class MockRvnNode implements RvnNode {
     // The issuance fee is paid only when the issue actually happens —
     // a validation failure above throws before any fee is charged,
     // exactly as a failed ravend RPC broadcasts no transaction.
-    this.payIssuanceFee('issue_asset', 'issue');
+    this.payIssuanceFee('issue_asset', 'issue', opts.fromAddress);
     this.addresses.add(opts.toAddress);
     this.assets.set(name, {
       name,
@@ -158,7 +200,7 @@ export class MockRvnNode implements RvnNode {
     return `mock-txid-${randomUUID()}`;
   }
 
-  async transferAsset(assetName: string, qty: string, toAddress: string): Promise<string> {
+  async transferAsset(assetName: string, qty: string, toAddress: string, fromAddress?: string): Promise<string> {
     const name = assetName.toUpperCase();
     const asset = this.assets.get(name);
     if (!asset) throw new Error(`unknown asset ${name}`);
@@ -167,11 +209,14 @@ export class MockRvnNode implements RvnNode {
     // The miner fee is paid in RVN: check the wallet can cover it
     // before moving any asset, so a failed transfer charges nothing —
     // the funding check requires the same RVN, so check and execution
-    // agree here too.
+    // agree here too. The fee comes from the issuing agent's wallet
+    // address when one is given (v0.41.0), else the operator address.
     const minerFee = this.minerFeeFor('transfer_asset');
-    if (this.rvnBalance < minerFee) {
+    const feeAddress = fromAddress ?? this.operatorAddress;
+    const feeBalance = this.rvnBalanceOf(feeAddress);
+    if (feeBalance < minerFee) {
       throw new Error(
-        `insufficient RVN balance for transfer miner fee (needs ${minerFee}, wallet holds ${this.rvnBalance})`,
+        `insufficient RVN balance for transfer miner fee (needs ${minerFee}, wallet holds ${feeBalance})`,
       );
     }
     // Debit the issuer's first address holding enough (mock simplification:
@@ -186,7 +231,7 @@ export class MockRvnNode implements RvnNode {
     if (remaining > 0n) throw new Error(`insufficient ${name} balance`);
     this.addresses.add(toAddress);
     asset.balances.set(toAddress, (asset.balances.get(toAddress) ?? 0n) + amount);
-    this.rvnBalance -= minerFee;
+    this.rvnBalances.set(feeAddress, feeBalance - minerFee);
     this.blocks += 1;
     return `mock-txid-${randomUUID()}`;
   }
@@ -198,6 +243,7 @@ export class MockRvnNode implements RvnNode {
     reissuable?: boolean;
     newUnits?: number;
     newIpfsHash?: string;
+    fromAddress?: string;
   }): Promise<string> {
     const name = opts.name.toUpperCase();
     const asset = this.assets.get(name);
@@ -213,7 +259,7 @@ export class MockRvnNode implements RvnNode {
     }
     if (opts.newIpfsHash !== undefined) asset.ipfsHash = opts.newIpfsHash;
     if (opts.reissuable !== undefined) asset.reissuable = opts.reissuable;
-    this.payIssuanceFee('reissue_asset', 'reissue');
+    this.payIssuanceFee('reissue_asset', 'reissue', opts.fromAddress);
     this.addresses.add(opts.toAddress);
     asset.balances.set(opts.toAddress, (asset.balances.get(opts.toAddress) ?? 0n) + qty);
     asset.amount = String(BigInt(asset.amount) + qty);
@@ -228,6 +274,7 @@ export class MockRvnNode implements RvnNode {
     units?: number;
     reissuable?: boolean;
     ipfsHash?: string;
+    fromAddress?: string;
   }): Promise<string> {
     const name = opts.name.toUpperCase();
     const segments = name.split('/');
@@ -241,7 +288,7 @@ export class MockRvnNode implements RvnNode {
     if (!this.assets.has(parent)) throw new Error(`unknown parent asset ${parent}`);
     const qty = BigInt(opts.qty);
     if (qty <= 0n) throw new Error('qty must be positive');
-    this.payIssuanceFee('issue_subasset', 'sub-asset issue');
+    this.payIssuanceFee('issue_subasset', 'sub-asset issue', opts.fromAddress);
     this.addresses.add(opts.toAddress);
     this.assets.set(name, {
       name,
@@ -259,6 +306,7 @@ export class MockRvnNode implements RvnNode {
     name: string;
     toAddress: string;
     ipfsHash?: string;
+    fromAddress?: string;
   }): Promise<string> {
     // The API uppercases asset names before they reach the node (as with
     // every other kind), so tags are case-insensitive here even though
@@ -273,7 +321,7 @@ export class MockRvnNode implements RvnNode {
     if (this.assets.has(name)) throw new Error(`asset ${name} already exists`);
     if (!this.assets.has(root)) throw new Error(`unknown root asset ${root}`);
     // A unique asset is a singleton: amount 1, units 0, never reissuable.
-    this.payIssuanceFee('issue_unique', 'unique-asset issue');
+    this.payIssuanceFee('issue_unique', 'unique-asset issue', opts.fromAddress);
     this.addresses.add(opts.toAddress);
     this.assets.set(name, {
       name,
@@ -312,18 +360,26 @@ export class MockRvnNode implements RvnNode {
     return total.toString();
   }
 
-  async getRvnBalance(): Promise<string> {
-    return this.rvnBalance.toString();
+  async getRvnBalance(address?: string): Promise<string> {
+    // No address: the wallet-wide total (the sum of every seeded
+    // address). With an address: that address's balance, '0' when the
+    // mock knows nothing about it — an unprovisioned address holds
+    // nothing, and the funding check agrees with execution here too.
+    if (address === undefined) return this.totalRvnBalance().toString();
+    return this.rvnBalanceOf(address).toString();
   }
 
   async estimateFeeRateBaseUnitsPerKb(): Promise<string | null> {
     return this.feeRate === null ? null : this.feeRate.toString();
   }
 
-  async listWalletBalances(): Promise<WalletBalances> {
+  async listWalletBalances(address?: string): Promise<WalletBalances> {
     // Same wallet semantics as getAssetBalance: every balance the
     // ledger records is wallet-held. Assets fully transferred out
-    // (total 0) are not listed, matching ravend's `listmyassets`.
+    // (total 0) are not listed, matching ravend's `listmyassets`. The
+    // RVN figure is the agent's own balance when an address is given
+    // (v0.41.0); the asset list stays wallet-wide until per-address
+    // asset balances land (slice 2 of per-agent wallets).
     const assets: WalletAssetBalance[] = [];
     for (const asset of this.assets.values()) {
       let total = 0n;
@@ -333,6 +389,6 @@ export class MockRvnNode implements RvnNode {
       }
     }
     assets.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    return { rvnBaseUnits: this.rvnBalance.toString(), assets };
+    return { rvnBaseUnits: await this.getRvnBalance(address), assets };
   }
 }

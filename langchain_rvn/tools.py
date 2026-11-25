@@ -325,13 +325,27 @@ def build_tools(client: RvnApiClient) -> list:
             return _error(err)
 
     @tool
-    def get_wallet_balances() -> str:
+    def get_wallet_balances(agent_id: str = "") -> str:
         """Read the wallet's balances: the RVN balance plus every asset
         balance the wallet holds (nonzero only), so an agent can see what
         the wallet can fund without simulating an intent for each asset.
-        All quantities are decimal strings in base units. Read-only."""
+        With agent_id the RVN figure is that agent's own wallet balance
+        (v0.41.0); the asset list stays wallet-wide. All quantities are
+        decimal strings in base units. Read-only."""
         try:
-            return _dump(client.get_wallet_balances())
+            return _dump(client.get_wallet_balances(agent_id or None))
+        except RvnApiError as err:
+            return _error(err)
+
+    @tool
+    def get_wallet_address(agent_id: str = "") -> str:
+        """Read an agent's stable wallet address (v0.41.0): minted from
+        the node on first call and tracked afterwards — the same address
+        on every call. Funding checks and fee debiting use this address,
+        so one agent cannot spend another's RVN. Read-only in the funds
+        sense: provisioning the address moves no funds."""
+        try:
+            return _dump(client.get_wallet_address(agent_id or None))
         except RvnApiError as err:
             return _error(err)
 
@@ -411,6 +425,7 @@ def build_tools(client: RvnApiClient) -> list:
         get_anomaly_stats,
         get_metrics,
         get_wallet_balances,
+        get_wallet_address,
         get_openapi,
         get_docs,
         get_audit,

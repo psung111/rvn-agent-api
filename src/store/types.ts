@@ -105,6 +105,18 @@ export interface ApiKeyStore {
 }
 
 /**
+ * Per-agent wallet addresses (v0.41.0). One stable address per agentId,
+ * minted from the node on first use (`rvn-agent-api:<agentId>` label)
+ * and tracked here, so funding checks and fee debiting can be
+ * per-agent. `get` returns undefined for an agent with no address yet;
+ * `set` overwrites (the caller provisions first, then records).
+ */
+export interface WalletStore {
+  get(agentId: string): Promise<string | undefined>;
+  set(agentId: string, address: string): Promise<void>;
+}
+
+/**
  * All durable state behind one seam. The server only talks to this interface;
  * `kind` tells operators which backend is actually serving (also on /v1/health).
  */
@@ -122,5 +134,6 @@ export interface Store {
   readonly audit: AuditStore;
   readonly ratelimits: RateLimitStore;
   readonly apikeys: ApiKeyStore;
+  readonly wallets: WalletStore;
   close(): Promise<void>;
 }

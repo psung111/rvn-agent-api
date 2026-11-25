@@ -70,6 +70,7 @@ import { TelegramApi } from './approvals/telegram-api.js';
 import { MockRvnNode } from './rvn/mock.js';
 import { RvnRpcClient } from './rvn/client.js';
 import { checkChainGuardrail, mainnetAllowedFromEnv, MainnetGuardrailError } from './rvn/guardrail.js';
+import { getOrCreateWalletAddress, getWalletAddress } from './rvn/wallets.js';
 import type { RvnNode } from './rvn/types.js';
 
 const MOCK = process.env.MOCK_RVN !== 'false';
@@ -427,8 +428,13 @@ async function main() {
    * path and the approval path, so extra params (units, ipfs hashes,
    * reissuable flags) captured in intent.execParams at submit time are
    * replayed faithfully after a hold instead of being dropped.
+   * `fromAddress` (v0.41.0) is the submitting agent's wallet address:
+   * the mock debits the issuance/miner fee from it, so one agent cannot
+   * spend another's RVN; the real client ignores it (ravend pays fees
+   * from the wallet pool — the funding check is the enforcement point
+   * there). Omit it and the mock debits its operator address.
    */
-  const executeIntent = async (intent: RvnIntent): Promise<string> => {
+  const executeIntent = async (intent: RvnIntent, fromAddress?: string): Promise<string> => {
     const p = intent.execParams ?? {};
     if (intent.kind === 'issue_asset') {
       return node.issueAsset({
@@ -438,6 +444,7 @@ async function main() {
         units: p.units,
         reissuable: p.reissuable,
         ipfsHash: p.ipfsHash,
+        fromAddress,
       });
     }
     if (intent.kind === 'reissue_asset') {
@@ -448,6 +455,7 @@ async function main() {
         reissuable: p.reissuable,
         newUnits: p.newUnits,
         newIpfsHash: p.newIpfsHash,
+        fromAddress,
       });
     }
     if (intent.kind === 'issue_subasset') {
@@ -458,6 +466,7 @@ async function main() {
         units: p.units,
         reissuable: p.reissuable,
         ipfsHash: p.ipfsHash,
+        fromAddress,
       });
     }
     if (intent.kind === 'issue_unique') {
@@ -467,9 +476,28 @@ async function main() {
         name: intent.assetName,
         toAddress: intent.destination,
         ipfsHash: p.ipfsHash,
+        fromAddress,
       });
     }
-    return node.transferAsset(intent.assetName, intent.qtyBaseUnits, intent.destination);
+    return node.transferAsset(intent.assetName, intent.qtyBaseUnits, intent.destination, fromAddress);
+  };
+
+  /**
+   * The submitting agent's wallet address (v0.41.0), provisioning it
+   * when the agent has none. A failure to mint or record the address
+   * (node down, store error) degrades to undefined instead of failing
+   * the submit: the funding check then reads the wallet-wide balance
+   * and execution debits the mock's operator address, exactly as
+   * before per-agent wallets — a wallet-layer failure never blocks a
+   * decision the policy engine already made.
+   */
+  const walletAddressFor = async (agentId: string): Promise<string | undefined> => {
+    try {
+      return await getOrCreateWalletAddress(store, node, agentId);
+    } catch (err) {
+      app.log.warn({ err, agentId }, 'per-agent wallet address unavailable — funding check falls back to the wallet-wide balance');
+      return undefined;
+    }
   };
 
   /**
@@ -606,7 +634,9 @@ async function main() {
     // with atApproval: true, so the hold ends as a clean refusal instead
     // of a 502 + EXECUTION_FAILED. A node that cannot answer (funded:
     // null) leaves the approval untouched and execution is attempted.
-    const funding = await checkFunding(intent, node);
+    // The check reads the approving agent's own wallet address (v0.41.0).
+    const walletAddress = await walletAddressFor(intent.agentId);
+    const funding = await checkFunding(intent, node, walletAddress);
     if (funding.funded === false) {
       const denied = applyFunding(fresh, funding);
       await store.audit.append('DECISION', intent.id, intent.agentId, {
@@ -620,7 +650,7 @@ async function main() {
       };
     }
     try {
-      const txid = await executeIntent(intent);
+      const txid = await executeIntent(intent, walletAddress);
       if (createsSupply(intent.kind)) {
         await store.ledger.recordIssue(intent.agentId, BigInt(intent.qtyBaseUnits), Date.now());
       }
@@ -659,7 +689,7 @@ async function main() {
 
   const submit = async (
     intent: RvnIntent,
-    execute: () => Promise<string>,
+    execute: (fromAddress?: string) => Promise<string>,
     reply: any,
   ) => {
     const policy = await policyFor(intent.agentId);
@@ -706,10 +736,15 @@ async function main() {
     // cannot answer (funded: null) leaves the ALLOW untouched — the
     // execution itself is the fallback verdict, as before. The gate runs
     // before the decision is stored and audited, so the audit trail
-    // carries one DECISION entry with the final verdict.
+    // carries one DECISION entry with the final verdict. The check reads
+    // the submitting agent's own wallet address (v0.41.0), resolved once
+    // here and reused for execution so the fee is debited from the same
+    // balance the check saw.
     let funding: FundingCheck | undefined;
+    let walletAddress: string | undefined;
     if (decision.kind === 'ALLOW') {
-      funding = await checkFunding(intent, node);
+      walletAddress = await walletAddressFor(intent.agentId);
+      funding = await checkFunding(intent, node, walletAddress);
       decision = applyFunding(decision, funding);
     }
     await store.intents.putIntent(intent);
@@ -723,7 +758,7 @@ async function main() {
 
     if (decision.kind === 'ALLOW') {
       try {
-        const txid = await execute();
+        const txid = await execute(walletAddress);
         if (createsSupply(intent.kind)) {
           await store.ledger.recordIssue(intent.agentId, BigInt(intent.qtyBaseUnits), Date.now());
         }
@@ -861,21 +896,55 @@ async function main() {
   });
 
   /**
-   * Wallet balances (read-only, v0.38.0): the wallet's RVN balance plus
-   * every asset balance it holds, so an operator or monitoring agent
-   * can see what the wallet can fund without simulating an intent for
-   * each asset. Read-only — the read writes nothing (no intents, no
-   * audit entries), so polling it cannot change what the next submit
-   * sees. A node that cannot answer is a 502, like any other node
-   * failure (the funding check's funded:null degradation does not
-   * apply here — there is no decision to keep, only the balances).
+   * Wallet balances (read-only, v0.38.0; per-agent since v0.41.0): the
+   * wallet's RVN balance plus every asset balance it holds, so an
+   * operator or monitoring agent can see what the wallet can fund
+   * without simulating an intent for each asset. Read-only — the read
+   * writes nothing (no intents, no audit entries), so polling it cannot
+   * change what the next submit sees. A node that cannot answer is a
+   * 502, like any other node failure (the funding check's funded:null
+   * degradation does not apply here — there is no decision to keep, only
+   * the balances). With `?agentId=` the RVN figure is that agent's own
+   * wallet balance (provisioning the address when the agent has none —
+   * the address route does the same explicitly); the asset list stays
+   * wallet-wide until per-address asset balances land. Under auth, a
+   * per-agent key may only read its own agent's balances.
    */
-  app.get('/v1/wallet/balances', async (_req, reply) => {
+  app.get('/v1/wallet/balances', async (req, reply) => {
+    const q = (req.query ?? {}) as Record<string, unknown>;
+    const agentId = typeof q.agentId === 'string' && q.agentId ? q.agentId : undefined;
+    if (agentId !== undefined) {
+      const forbidden = await checkAgentParam(req, agentId);
+      if (forbidden) return reply.code(403).send({ error: forbidden });
+    }
     try {
-      return await node.listWalletBalances();
+      const address = agentId === undefined ? undefined : await getOrCreateWalletAddress(store, node, agentId);
+      return await node.listWalletBalances(address);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return reply.code(502).send({ error: `node balance read failed: ${message}` });
+    }
+  });
+
+  /**
+   * Per-agent wallet address (v0.41.0): the agent's stable wallet
+   * address, minted from the node on first call and tracked in the
+   * store afterwards — the same address on every call. Funding checks
+   * and fee debiting use this address, so one agent cannot spend
+   * another's RVN. Under auth, a per-agent key may only read its own
+   * agent's address. A node or store failure is a 502: an address the
+   * API cannot trust is worse than an error.
+   */
+  app.get('/v1/wallet/address/:agentId', async (req, reply) => {
+    const agentId = (req.params as { agentId: string }).agentId;
+    const forbidden = await checkAgentParam(req, agentId);
+    if (forbidden) return reply.code(403).send({ error: forbidden });
+    try {
+      const address = await getOrCreateWalletAddress(store, node, agentId);
+      return { agentId, address };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return reply.code(502).send({ error: `wallet address provisioning failed: ${message}` });
     }
   });
 
@@ -906,7 +975,7 @@ async function main() {
         ipfsHash: b.ipfsHash,
       },
     };
-    return submit(intent, () => executeIntent(intent), reply);
+    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
   });
 
   /**
@@ -956,7 +1025,7 @@ async function main() {
       requestedAtMs: Date.now(),
       execParams: { reissuable, newUnits, newIpfsHash },
     };
-    return submit(intent, () => executeIntent(intent), reply);
+    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
   });
 
   /**
@@ -999,7 +1068,7 @@ async function main() {
         ipfsHash: typeof b.ipfsHash === 'string' ? b.ipfsHash : undefined,
       },
     };
-    return submit(intent, () => executeIntent(intent), reply);
+    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
   });
 
   /**
@@ -1045,7 +1114,7 @@ async function main() {
         ipfsHash: typeof b.ipfsHash === 'string' ? b.ipfsHash : undefined,
       },
     };
-    return submit(intent, () => executeIntent(intent), reply);
+    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
   });
 
   app.post('/v1/assets/transfer', async (req, reply) => {
@@ -1064,7 +1133,7 @@ async function main() {
       destination: String(b.destination),
       requestedAtMs: Date.now(),
     };
-    return submit(intent, () => executeIntent(intent), reply);
+    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
   });
 
   app.get('/v1/assets', async (req) => {
@@ -1197,7 +1266,22 @@ async function main() {
         note: 'dry run — no intent stored, no spend recorded, no audit entry, nothing executed',
       };
     }
-    const funding = await checkFunding(intent, node);
+    // Balance-aware (v0.36.0): a policy ALLOW the wallet cannot fund is
+    // a DENY, not an ALLOW — checked here, after the policy engine, so
+    // the funding verdict never masks a policy DENY or hold, and only
+    // with read-only balance lookups (no state moves anywhere). The
+    // check reads the agent's wallet address when one is already
+    // tracked (v0.41.0); it never provisions one — a simulation must
+    // not create persistent state — so an agent with no address yet is
+    // checked against the wallet-wide balance. Provision the address
+    // first (GET /v1/wallet/address/:agentId) for an exact prediction.
+    let walletAddress: string | undefined;
+    try {
+      walletAddress = await getWalletAddress(store, intent.agentId);
+    } catch (err) {
+      app.log.warn({ err, agentId: intent.agentId }, 'per-agent wallet address read failed — simulate falls back to the wallet-wide balance');
+    }
+    const funding = await checkFunding(intent, node, walletAddress);
     return {
       simulated: true,
       decision: applyFunding(decision, funding),

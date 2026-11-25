@@ -6,7 +6,7 @@ import type { PolicyVersion } from '../policy/history.js';
 import type { Decision, IssueLedger, RvnIntent, RvnPolicy } from '../policy/index.js';
 import { applyMigrations, loadMigrations, type Migration } from './migrations.js';
 import { auditPartitionDdl, auditPartitionFor } from './partitions.js';
-import type { ApiKeyStore, AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store } from './types.js';
+import type { ApiKeyStore, AuditStore, IntentStore, PolicyStore, RateLimitBucketState, RateLimitStore, Store, WalletStore } from './types.js';
 
 function rowToEntry(r: {
   seq: string | number; prev_hash: string; hash: string; at_ms: string | number;
@@ -328,6 +328,21 @@ class PostgresApiKeyStore implements ApiKeyStore {
   }
 }
 
+class PostgresWalletStore implements WalletStore {
+  constructor(private pool: Pool) {}
+  async get(agentId: string): Promise<string | undefined> {
+    const { rows } = await this.pool.query('SELECT address FROM agent_wallets WHERE agent_id = $1', [agentId]);
+    return rows[0]?.address as string | undefined;
+  }
+  async set(agentId: string, address: string): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO agent_wallets (agent_id, address, created_at_ms) VALUES ($1, $2, $3)
+       ON CONFLICT (agent_id) DO UPDATE SET address = EXCLUDED.address`,
+      [agentId, address, Date.now()],
+    );
+  }
+}
+
 class PostgresLedger implements IssueLedger {
   constructor(private pool: Pool) {}
   async recordIssue(agentId: string, qtyBaseUnits: bigint, atMs: number): Promise<void> {
@@ -357,6 +372,7 @@ export class PostgresStore implements Store {
   readonly audit: AuditStore;
   readonly ratelimits: RateLimitStore;
   readonly apikeys: ApiKeyStore;
+  readonly wallets: WalletStore;
 
   private constructor(private pool: Pool, appliedMigrations: readonly string[]) {
     this.appliedMigrations = appliedMigrations;
@@ -366,6 +382,7 @@ export class PostgresStore implements Store {
     this.audit = new PostgresAuditStore(pool);
     this.ratelimits = new PostgresRateLimitStore(pool);
     this.apikeys = new PostgresApiKeyStore(pool);
+    this.wallets = new PostgresWalletStore(pool);
   }
 
   /**

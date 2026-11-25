@@ -135,8 +135,8 @@ async function main() {
 
   // --- 2. Shipped migration 0003 ---
   const shipped = loadMigrations(join(repo, 'src', 'store', 'migrations'));
-  check('shipped migrations load: 0001 + 0002 + 0003 + 0004 + 0005 + 0006',
-    shipped.length === 6 && shipped[2].version === '0003' &&
+  check('shipped migrations load: 0001 + 0002 + 0003 + 0004 + 0005 + 0006 + 0007',
+    shipped.length === 7 && shipped[2].version === '0003' &&
     shipped[2].name === 'audit_entries_partitioning', shipped.map((m) => m.version));
   const m3 = shipped[2].sql;
   check('0003 builds a range-partitioned rebuild table',
@@ -150,9 +150,9 @@ async function main() {
 
   const pool = new FakePool();
   const applied = await applyMigrations(pool, shipped);
-  check('fake-pool fresh apply returns all six versions',
-    JSON.stringify(applied) === '["0001","0002","0003","0004","0005","0006"]', applied);
-  check('one transaction per migration', pool.begins === 6, pool.begins);
+  check('fake-pool fresh apply returns all seven versions',
+    JSON.stringify(applied) === '["0001","0002","0003","0004","0005","0006","0007"]', applied);
+  check('one transaction per migration', pool.begins === 7, pool.begins);
   check('0003 body committed through the runner',
     pool.committed.some((s) => s.includes('PARTITION BY RANGE (at_ms)')), pool.committed.length);
 
@@ -192,10 +192,10 @@ async function main() {
       }
       await adminPool.end();
 
-      // Connecting runs 0003 (and 0004, 0005, 0006): the rebuild.
+      // Connecting runs 0003 (and 0004, 0005, 0006, 0007): the rebuild.
       store = await PostgresStore.connect(scratchUrl.toString());
       check('live connect applies 0003 on top of the old schema',
-        JSON.stringify(store.appliedMigrations) === '["0001","0002","0003","0004","0005","0006"]', store.appliedMigrations);
+        JSON.stringify(store.appliedMigrations) === '["0001","0002","0003","0004","0005","0006","0007"]', store.appliedMigrations);
       probe = new Pool({ connectionString: scratchUrl.toString() });
       const { rows: kindRows } = await probe.query(
         "SELECT relkind FROM pg_class WHERE relname = 'audit_entries'",
@@ -259,7 +259,7 @@ async function main() {
       probe = undefined;
       const again = await PostgresStore.connect(scratchUrl.toString());
       check('live reconnect is idempotent',
-        JSON.stringify(again.appliedMigrations) === '["0001","0002","0003"]', again.appliedMigrations);
+        JSON.stringify(again.appliedMigrations) === '["0001","0002","0003","0004","0005","0006","0007"]', again.appliedMigrations);
       await again.close();
       await store.close();
       store = undefined;

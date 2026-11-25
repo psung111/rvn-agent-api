@@ -170,10 +170,10 @@ async function main() {
 
   // The shipped migrations parse and validate.
   const shipped = loadMigrations(join(repo, 'src', 'store', 'migrations'));
-  check('shipped migrations load: 0001 + 0002 + 0003 + 0004 + 0005 + 0006',
-    shipped.length === 6 && shipped[0].version === '0001' && shipped[1].version === '0002' &&
+  check('shipped migrations load: 0001 + 0002 + 0003 + 0004 + 0005 + 0006 + 0007',
+    shipped.length === 7 && shipped[0].version === '0001' && shipped[1].version === '0002' &&
     shipped[2].version === '0003' && shipped[3].version === '0004' && shipped[4].version === '0005' &&
-    shipped[5].version === '0006',
+    shipped[5].version === '0006' && shipped[6].version === '0007',
     shipped.map((m) => m.version));
   check('0001 carries the baseline tables',
     shipped[0].sql.includes('CREATE TABLE IF NOT EXISTS audit_entries') &&
@@ -194,30 +194,36 @@ async function main() {
     shipped[5].sql.includes('CREATE TABLE IF NOT EXISTS policy_history') &&
     shipped[5].sql.includes('replaced_by') &&
     shipped[5].sql.includes("IN ('put', 'preset', 'rollback')"), shipped[5].sql);
+  check('0007 adds the agent_wallets table (one stable address per agent)',
+    shipped[6].sql.includes('CREATE TABLE IF NOT EXISTS agent_wallets') &&
+    shipped[6].sql.includes('agent_id TEXT PRIMARY KEY') &&
+    shipped[6].sql.includes('address TEXT NOT NULL'), shipped[6].sql);
 
   // --- 4. Runner against the fake pool ---
   const pool = new FakePool();
   const applied = await applyMigrations(pool, shipped);
-  check('fresh apply returns all six versions', JSON.stringify(applied) === '["0001","0002","0003","0004","0005","0006"]', applied);
-  check('all six migrations recorded', pool.applied.get('0001') === 'initial' &&
+  check('fresh apply returns all seven versions', JSON.stringify(applied) === '["0001","0002","0003","0004","0005","0006","0007"]', applied);
+  check('all seven migrations recorded', pool.applied.get('0001') === 'initial' &&
     pool.applied.get('0002') === 'decisions_kind_index' &&
     pool.applied.get('0003') === 'audit_entries_partitioning' &&
     pool.applied.get('0004') === 'api_keys' &&
     pool.applied.get('0005') === 'api_key_scopes' &&
-    pool.applied.get('0006') === 'policy_history', [...pool.applied.entries()]);
-  check('one transaction per migration', pool.begins === 6, pool.begins);
-  check('all six migration bodies committed',
+    pool.applied.get('0006') === 'policy_history' &&
+    pool.applied.get('0007') === 'agent_wallets', [...pool.applied.entries()]);
+  check('one transaction per migration', pool.begins === 7, pool.begins);
+  check('all seven migration bodies committed',
     pool.committed.some((s) => s.includes('audit_entries')) &&
     pool.committed.some((s) => s.includes('decisions_kind')) &&
     pool.committed.some((s) => s.includes('PARTITION BY RANGE (at_ms)')) &&
     pool.committed.some((s) => s.includes('api_keys')) &&
     pool.committed.some((s) => s.includes('scopes TEXT[]')) &&
-    pool.committed.some((s) => s.includes('policy_history')), pool.committed.length);
+    pool.committed.some((s) => s.includes('policy_history')) &&
+    pool.committed.some((s) => s.includes('agent_wallets')), pool.committed.length);
 
   const beginsBefore = pool.begins;
   const committedBefore = pool.committed.length;
   const reapplied = await applyMigrations(pool, shipped);
-  check('re-run is a no-op', JSON.stringify(reapplied) === '["0001","0002","0003","0004","0005","0006"]' &&
+  check('re-run is a no-op', JSON.stringify(reapplied) === '["0001","0002","0003","0004","0005","0006","0007"]' &&
     pool.begins === beginsBefore && pool.committed.length === committedBefore);
 
   // Failing migration: rolls back, leaves no row, retry succeeds.
@@ -240,7 +246,7 @@ async function main() {
   flaky.failOn = undefined;
   const afterRetry = await applyMigrations(flaky, shipped);
   check('retry after failure applies the pending migration',
-    JSON.stringify(afterRetry) === '["0001","0002","0003","0004","0005","0006"]' && flaky.applied.get('0002') === 'decisions_kind_index');
+    JSON.stringify(afterRetry) === '["0001","0002","0003","0004","0005","0006","0007"]' && flaky.applied.get('0002') === 'decisions_kind_index');
 
   // Inconsistent database states fail fast.
   const downgraded = new FakePool();
@@ -248,10 +254,10 @@ async function main() {
   await expectMigrationError('unknown applied version (downgrade) rejected', () =>
     applyMigrations(downgraded, shipped));
   const gapped = new FakePool();
-  const seven = [...shipped, M('0007', 'later')];
+  const eight = [...shipped, M('0008', 'later')];
   gapped.applied.set('0001', 'initial');
-  gapped.applied.set('0007', 'later');
-  await expectMigrationError('gap in applied set rejected', () => applyMigrations(gapped, seven));
+  gapped.applied.set('0008', 'later');
+  await expectMigrationError('gap in applied set rejected', () => applyMigrations(gapped, eight));
 
   // --- 5. Live leg against a scratch database (skipped without Postgres) ---
   const pgUrl = process.env.TEST_DATABASE_URL ?? process.env.RVN_DATABASE_URL;
@@ -266,16 +272,17 @@ async function main() {
       admin = new Pool({ connectionString: adminUrl.toString() });
       await admin.query(`CREATE DATABASE "${scratch}"`);
       const store = await PostgresStore.connect(scratchUrl.toString());
-      check('live connect applies all six migrations',
-        JSON.stringify(store.appliedMigrations) === '["0001","0002","0003","0004","0005","0006"]', store.appliedMigrations);
+      check('live connect applies all seven migrations',
+        JSON.stringify(store.appliedMigrations) === '["0001","0002","0003","0004","0005","0006","0007"]', store.appliedMigrations);
       const probe = new Pool({ connectionString: scratchUrl.toString() });
       const { rows: migRows } = await probe.query(
         'SELECT version, name FROM schema_migrations ORDER BY version ASC',
       );
       check('schema_migrations rows recorded live',
-        migRows.length === 6 && migRows[1].name === 'decisions_kind_index' &&
+        migRows.length === 7 && migRows[1].name === 'decisions_kind_index' &&
         migRows[2].name === 'audit_entries_partitioning' && migRows[3].name === 'api_keys' &&
-        migRows[4].name === 'api_key_scopes' && migRows[5].name === 'policy_history', migRows);
+        migRows[4].name === 'api_key_scopes' && migRows[5].name === 'policy_history' &&
+        migRows[6].name === 'agent_wallets', migRows);
       const { rows: idxRows } = await probe.query(
         "SELECT indexname FROM pg_indexes WHERE tablename = 'decisions' AND indexname = 'decisions_kind'",
       );
@@ -283,7 +290,7 @@ async function main() {
       await probe.end();
       const again = await PostgresStore.connect(scratchUrl.toString());
       check('live reconnect is idempotent',
-        JSON.stringify(again.appliedMigrations) === '["0001","0002","0003","0004","0005"]', again.appliedMigrations);
+        JSON.stringify(again.appliedMigrations) === '["0001","0002","0003","0004","0005","0006","0007"]', again.appliedMigrations);
       await again.close();
       await store.close();
     } catch (err) {

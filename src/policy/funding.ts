@@ -7,6 +7,11 @@
  *   - a supply-creating op (issue / reissue / sub-asset / unique) needs
  *     the wallet to hold enough RVN for the issuance fee
  *
+ * Since v0.41.0 the RVN legs read the submitting agent's own wallet
+ * address (when the server resolved one) instead of the wallet-wide
+ * balance, so one agent's fees cannot drain what another agent
+ * simulates against; the asset leg is still wallet-wide in this slice.
+ *
  * The fees are Ravencoin consensus issuance fees, in RVN base units
  * (1 RVN = 10^8 base units): issue 500 RVN, reissue 100 RVN, sub-asset
  * 100 RVN, unique asset 5 RVN. They are chain constants, not policy —
@@ -170,6 +175,14 @@ export interface FundingCheck {
  * is reported as `funded: null` with the error message, and the caller
  * keeps the policy decision.
  *
+ * `walletAddress` (v0.41.0) is the agent's own wallet address: the RVN
+ * legs read that address's balance instead of the wallet-wide one, so
+ * one agent's issue fee cannot drain the balance another agent
+ * simulates against. Omit it (simulate before any address exists, or
+ * a caller that could not resolve one) for the wallet-wide balance, as
+ * before. The asset leg stays wallet-wide in this slice — per-address
+ * asset balances are the next slice of per-agent wallets.
+ *
  * The miner fee rides on top of the base requirement. For a
  * supply-creating op the RVN requirement is issuance fee + estimated
  * miner fee, so a wallet holding exactly the issuance fee is unfunded.
@@ -182,7 +195,11 @@ export interface FundingCheck {
  * alone and the miner-fee leg reports nulls instead of failing the
  * simulation.
  */
-export async function checkFunding(intent: RvnIntent, node: RvnNode): Promise<FundingCheck> {
+export async function checkFunding(
+  intent: RvnIntent,
+  node: RvnNode,
+  walletAddress?: string,
+): Promise<FundingCheck> {
   const requirement = fundingRequirementFor(intent);
   const estimatedTxSizeVbytes = ESTIMATED_TX_SIZE_VBYTES[intent.kind];
   // The fee rate is advisory: an unestimable rate degrades the check to
@@ -210,12 +227,13 @@ export async function checkFunding(intent: RvnIntent, node: RvnNode): Promise<Fu
 
   if (requirement.asset === 'RVN') {
     // Supply-creating op: one RVN requirement — issuance fee + miner fee.
+    // The balance is the agent's own wallet address when known (v0.41.0).
     const required =
       minerFeeBaseUnits === null
         ? requirement.requiredBaseUnits
         : (BigInt(requirement.requiredBaseUnits) + BigInt(minerFeeBaseUnits)).toString();
     try {
-      const balance = await node.getRvnBalance();
+      const balance = await node.getRvnBalance(walletAddress);
       return {
         ...requirement,
         requiredBaseUnits: required,
@@ -250,7 +268,7 @@ export async function checkFunding(intent: RvnIntent, node: RvnNode): Promise<Fu
       return { ...requirement, balanceBaseUnits: balance, funded: true, minerFee };
     }
     try {
-      const rvnBalance = await node.getRvnBalance();
+      const rvnBalance = await node.getRvnBalance(walletAddress);
       const rvnFunded = BigInt(rvnBalance) >= BigInt(minerFeeBaseUnits);
       return {
         ...requirement,

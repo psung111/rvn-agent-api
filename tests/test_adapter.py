@@ -151,7 +151,7 @@ def main():
         # --- LangChain tools ---
         tools = get_tools(client)
         by_name = {t.name: t for t in tools}
-        check("26 tools built", len(tools) == 26, sorted(by_name))
+        check("27 tools built", len(tools) == 27, sorted(by_name))
         check("tool names cover every route",
               {"issue_asset", "reissue_asset", "issue_subasset", "issue_unique",
                "transfer_asset", "list_assets", "get_asset", "simulate_intent",
@@ -159,6 +159,7 @@ def main():
                "set_policy", "list_presets", "apply_preset", "get_policy_history",
                "rollback_policy", "get_ratelimit",
                "get_anomaly_stats", "get_metrics", "get_wallet_balances",
+               "get_wallet_address",
                "get_openapi", "get_docs", "get_audit",
                "archive_audit", "create_wallet"} == set(by_name))
         stats = client.get_ratelimit()
@@ -216,19 +217,30 @@ def main():
               tool_metrics.get("decisions", {}).get("total") ==
               metrics.get("decisions", {}).get("total")
               and tool_metrics.get("store") == "memory", tool_metrics)
-        balances = client.get_wallet_balances()
-        check("client get_wallet_balances: RVN below the 1,000,000 start, issued coins listed",
+        balances = client.get_wallet_balances(AGENT)
+        check("client get_wallet_balances: agent RVN below the 1,000,000 start, issued coins listed",
               balances.get("rvnBaseUnits", "").isdigit()
               and int(balances["rvnBaseUnits"]) < 1_000_000 * 10**8
               and any(a.get("name") == "LCADAPTER"
                       and a.get("balanceBaseUnits") == "100"
                       for a in balances.get("assets", [])),
               balances)
-        tool_balances = json.loads(by_name["get_wallet_balances"].invoke({}))
+        tool_balances = json.loads(by_name["get_wallet_balances"].invoke({"agent_id": AGENT}))
         check("tool get_wallet_balances matches the client shape",
               tool_balances.get("rvnBaseUnits") == balances.get("rvnBaseUnits")
               and tool_balances.get("assets") == balances.get("assets"),
               tool_balances)
+        address = client.get_wallet_address()
+        check("client get_wallet_address: stable address for the calling agent",
+              address.get("agentId") == AGENT
+              and isinstance(address.get("address"), str)
+              and len(address["address"]) > 0,
+              address)
+        tool_address = json.loads(by_name["get_wallet_address"].invoke({}))
+        check("tool get_wallet_address matches the client shape",
+              tool_address.get("address") == address.get("address")
+              and tool_address.get("agentId") == AGENT,
+              tool_address)
         spec = client.get_openapi()
         check("client get_openapi: OpenAPI 3.0.3 contract with every route",
               spec.get("openapi") == "3.0.3"

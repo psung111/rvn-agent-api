@@ -220,16 +220,26 @@ async function main() {
     // Snapshot the audit AFTER the issues: balance reads must add nothing.
     const auditBefore = await get(API1, '/v1/audit?limit=100');
     const auditLenBefore = (auditBefore.json?.entries ?? []).length;
+    // Per-agent wallets (v0.41.0): the issues were submitted as agent-1,
+    // so the fees came out of agent-1's own wallet address — the
+    // agent-scoped read is the meaningful one now. The wallet-wide total
+    // is the sum of the operator seed (1,000,000 RVN) and agent-1's
+    // balance, since provisioning agent-1's address seeded it.
+    const agentBalances = await get(API1, '/v1/wallet/balances?agentId=agent-1');
+    check('API per-agent balances after issues: fee + miner fee debited from agent-1, assets sorted with balances',
+      agentBalances.status === 200 &&
+      agentBalances.json?.rvnBaseUnits === ((999_000n * RVN_BASE_UNITS_PER_COIN) - 10_000n).toString() &&
+      agentBalances.json?.assets?.length === 2 &&
+      agentBalances.json.assets[0]?.name === 'INTCOIN' &&
+      agentBalances.json.assets[0]?.balanceBaseUnits === '500' &&
+      agentBalances.json.assets[0]?.units === 0 &&
+      agentBalances.json.assets[1]?.name === 'ZCOIN' &&
+      agentBalances.json.assets[1]?.balanceBaseUnits === '7',
+      agentBalances);
     const apiBalances = await get(API1, '/v1/wallet/balances');
-    check('API balances after issues: fee + miner fee debited, assets sorted with balances',
+    check('API wallet-wide total is the operator seed plus agent-1 (2,000,000 RVN - fees)',
       apiBalances.status === 200 &&
-      apiBalances.json?.rvnBaseUnits === ((999_000n * RVN_BASE_UNITS_PER_COIN) - 10_000n).toString() &&
-      apiBalances.json?.assets?.length === 2 &&
-      apiBalances.json.assets[0]?.name === 'INTCOIN' &&
-      apiBalances.json.assets[0]?.balanceBaseUnits === '500' &&
-      apiBalances.json.assets[0]?.units === 0 &&
-      apiBalances.json.assets[1]?.name === 'ZCOIN' &&
-      apiBalances.json.assets[1]?.balanceBaseUnits === '7',
+      apiBalances.json?.rvnBaseUnits === ((1_999_000n * RVN_BASE_UNITS_PER_COIN) - 10_000n).toString(),
       apiBalances);
     const auditAfter = await get(API1, '/v1/audit?limit=100');
     const pending = await get(API1, '/v1/intents/pending');

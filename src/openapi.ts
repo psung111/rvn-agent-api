@@ -45,7 +45,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.40.0',
+    version: '0.41.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -145,13 +145,66 @@ export const openApiDocument = {
           'each asset. Only assets with a nonzero wallet balance are listed — an asset fully ' +
           'transferred out disappears from the list. All quantities are decimal strings in base ' +
           'units; polling writes nothing (no intents, no audit entries). A node that cannot answer ' +
-          'returns 502.',
+          'returns 502. With ?agentId= the RVN figure is that agent\'s own wallet balance ' +
+          '(v0.41.0, provisioning the address when the agent has none); the asset list stays ' +
+          'wallet-wide until per-address asset balances land.',
+        parameters: [
+          {
+            name: 'agentId',
+            in: 'query',
+            required: false,
+            schema: { type: 'string' },
+            description: 'Agent whose wallet RVN balance to read. Omit for the wallet-wide balance.',
+          },
+        ],
         responses: {
           '200': {
             description: 'Current wallet balances.',
             content: { 'application/json': { schema: { $ref: '#/components/schemas/WalletBalances' } } },
           },
           '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
+          '502': { $ref: '#/components/responses/NodeFailed' },
+        },
+      },
+    },
+    '/v1/wallet/address/{agentId}': {
+      get: {
+        tags: ['Assets'],
+        summary: 'Per-agent wallet address',
+        description:
+          'Read the agent\'s stable wallet address (v0.41.0), minted from the node on first call ' +
+          'and tracked in the store afterwards — the same address on every call. Funding checks ' +
+          'and fee debiting use this address, so one agent cannot spend another\'s RVN. Under ' +
+          'auth, a per-agent key may only read its own agent\'s address. A node or store failure ' +
+          'returns 502.',
+        parameters: [
+          {
+            name: 'agentId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+            description: 'Agent identity.',
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'The agent\'s wallet address.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['agentId', 'address'],
+                  properties: {
+                    agentId: { type: 'string', description: 'Agent identity.' },
+                    address: { type: 'string', description: 'The agent\'s stable wallet address.' },
+                  },
+                },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '403': { $ref: '#/components/responses/Forbidden' },
           '502': { $ref: '#/components/responses/NodeFailed' },
         },
       },

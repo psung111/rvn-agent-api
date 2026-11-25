@@ -13,8 +13,9 @@
  * The suite covers: policy get/set round-trip, intent + decision put/get,
  * pending() listing and expiry, the rolling issue ledger, audit chain
  * append/verify, hash-chain tamper detection, the rate-limit bucket
- * seam (set/get/all round-trip), and the API-key seam (issue/getByHash/
- * list/revoke round-trip, hashes only).
+ * seam (set/get/all round-trip), the API-key seam (issue/getByHash/
+ * list/revoke round-trip, hashes only), and the per-agent wallet
+ * address seam (v0.41.0: set/get round-trip, per-agent isolation).
  */
 import { Pool } from 'pg';
 import { verifyChain, type AuditEntry } from '../src/audit.js';
@@ -239,6 +240,20 @@ async function runSuite(label: string, store: Store) {
   check('api key unknown id is undefined',
     (await store.apikeys.getById('no-such-key')) === undefined);
 
+  // Per-agent wallet addresses (v0.41.0): one stable address per agent.
+  check('wallet address unknown agent is undefined',
+    (await store.wallets.get(`${label}-wallet-nobody`)) === undefined);
+  await store.wallets.set(`${label}-wallet-agent`, 'mtest1wallet000001xxxxxxxxxxxx');
+  check('wallet address set/get round-trips',
+    (await store.wallets.get(`${label}-wallet-agent`)) === 'mtest1wallet000001xxxxxxxxxxxx');
+  await store.wallets.set(`${label}-wallet-agent`, 'mtest1wallet000002xxxxxxxxxxxx');
+  check('wallet address set overwrites (last provision wins)',
+    (await store.wallets.get(`${label}-wallet-agent`)) === 'mtest1wallet000002xxxxxxxxxxxx');
+  await store.wallets.set(`${label}-wallet-agent-2`, 'mtest1wallet000003xxxxxxxxxxxx');
+  check('wallet addresses are per-agent',
+    (await store.wallets.get(`${label}-wallet-agent-2`)) === 'mtest1wallet000003xxxxxxxxxxxx' &&
+    (await store.wallets.get(`${label}-wallet-agent`)) === 'mtest1wallet000002xxxxxxxxxxxx');
+
   await store.close();
 }
 
@@ -258,7 +273,7 @@ async function main() {
       // Wipe the non-policy tables so the suite is isolated from earlier
       // runs (policies keep the seeded default the suite asserts on).
       const admin = new Pool({ connectionString: pgUrl });
-      await admin.query('TRUNCATE intents, decisions, audit_entries, ledger_spend, ratelimit_buckets, api_keys');
+      await admin.query('TRUNCATE intents, decisions, audit_entries, ledger_spend, ratelimit_buckets, api_keys, agent_wallets');
       await admin.end();
       await runSuite('postgres', pgStore);
     } catch (err) {
