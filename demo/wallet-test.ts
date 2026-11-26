@@ -204,11 +204,12 @@ async function main() {
       freshApi);
 
     // The default policy allows no destinations, so issues to a fresh
-    // address hold; provision an address and allowlist it first (the
-    // funding test's pattern), then the issues ALLOW.
-    const wallet = await post(API1, '/v1/wallets', {});
-    const address = wallet.json?.address as string;
-    check('wallet provisioned', typeof address === 'string' && address.length > 0, wallet);
+    // address hold; provision the agent's own wallet address and
+    // allowlist it first (the funding test's pattern), then the issues
+    // ALLOW — and the agent-scoped balances list them, since the coins
+    // sit at that address (v0.42.0: the asset list is per-address too).
+    const address = (await get(API1, '/v1/wallet/address/agent-1')).json?.address as string;
+    check('agent-1 wallet address provisioned', typeof address === 'string' && address.length > 0, address);
     const basePolicy = await get(API1, '/v1/policies/agent-1');
     const putPolicy = await put(API1, '/v1/policies/agent-1', {
       ...basePolicy.json, agentId: 'agent-1', allowedDestinations: [address],

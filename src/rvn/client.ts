@@ -97,7 +97,10 @@ export class RvnRpcClient implements RvnNode {
 
   async transferAsset(assetName: string, qty: string, toAddress: string, _fromAddress?: string): Promise<string> {
     // transfer "asset_name" qty "to_address" — the miner fee comes from
-    // the wallet pool; fromAddress is ignored here like on issue (see above).
+    // the wallet pool and the asset moves from the wallet's holdings;
+    // fromAddress is ignored here like on issue (see above), so on a
+    // real node the funding check — which reads the agent's address —
+    // is the enforcement point for per-agent asset isolation.
     return this.call<string>('transfer', [assetName, Number(qty), toAddress]);
   }
 
@@ -195,12 +198,30 @@ export class RvnRpcClient implements RvnNode {
    * an absent entry means "not held", not "unknown". The verbose form
    * returns per-asset objects with amount (display units) and units;
    * a plain-number shape falls back to `getassetdata` for the units.
-   * NOTE: this path is implemented against the documented RPC shapes
-   * and is not verified against a live ravend on this VM (no live node
-   * here) — the mock leg is what the test suite exercises.
+   *
+   * With an address (v0.42.0) the read scopes to that agent's wallet
+   * address via `listassetbalancesbyaddress` (display amounts, so the
+   * units come from `getassetdata` the same way) — the funding check's
+   * asset leg is per-agent on a real node too, and the check is the
+   * enforcement point there: ravend's `transfer` moves wallet-owned
+   * assets regardless of address, so an agent whose address holds none
+   * of the asset is refused at the gate instead of at execution. NOTE:
+   * this path is implemented against the documented RPC shapes and is
+   * not verified against a live ravend on this VM (no live node here)
+   * — the mock leg is what the test suite exercises.
    */
-  async getAssetBalance(assetName: string): Promise<string | null> {
+  async getAssetBalance(assetName: string, address?: string): Promise<string | null> {
     const name = assetName.toUpperCase();
+    if (address !== undefined) {
+      const raw = await this.call<Record<string, number> | null>('listassetbalancesbyaddress', [address]);
+      if (!raw) return null;
+      const amount = raw[name];
+      if (amount === undefined) return null;
+      const data = await this.getAssetData(name);
+      if (!data) return null;
+      const balance = decimalToBaseUnits(amount, data.units);
+      return BigInt(balance) > 0n ? balance : null;
+    }
     const raw = await this.call<Record<
       string,
       number | { amount: number; units: number }

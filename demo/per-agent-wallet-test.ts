@@ -117,7 +117,11 @@ async function main() {
     (await mock.getRvnBalance(throwaway)) === '0' &&
     (await mock.getRvnBalance()) === (3_000_000n * RVN_BASE_UNITS_PER_COIN).toString());
 
-  await mock.issueAsset({ name: 'ISOLCOIN', qty: '100', toAddress: throwaway, fromAddress: agentA });
+  // Per-address asset balances (v0.42.0): the coin is issued to agent-A's
+  // own wallet address, so a transfer from agent-A debits only that
+  // address — agent-B's holding is untouched by the issue, and the
+  // scoped balance lists show each address's own holding.
+  await mock.issueAsset({ name: 'ISOLCOIN', qty: '100', toAddress: agentA, fromAddress: agentA });
   check('mock issue debits only the issuing agent address (500 RVN + 5,000 sat miner fee)',
     (await mock.getRvnBalance(agentA)) === (BigInt(ONE_MILLION_RVN) - BigInt(ISSUE_FEE_PLUS_MINER)).toString() &&
     (await mock.getRvnBalance(agentB)) === ONE_MILLION_RVN &&
@@ -129,12 +133,16 @@ async function main() {
     (await mock.getRvnBalance(agentA)) === (BigInt(ONE_MILLION_RVN) - BigInt(ISSUE_FEE_PLUS_MINER) - 3_500n).toString() &&
     (await mock.getRvnBalance(agentB)) === ONE_MILLION_RVN,
     { a: await mock.getRvnBalance(agentA), b: await mock.getRvnBalance(agentB) });
+  check('mock transfer moves only the fromAddress holding (60 stays with agent-A, 40 with agent-B)',
+    (await mock.getAssetBalance('ISOLCOIN', agentA)) === '60' &&
+    (await mock.getAssetBalance('ISOLCOIN', agentB)) === '40' &&
+    (await mock.getAssetBalance('ISOLCOIN')) === '100');
 
   const scoped = await mock.listWalletBalances(agentB);
-  check('mock listWalletBalances(address) reports that agent RVN with the wallet-wide asset list',
+  check('mock listWalletBalances(address) reports that agent RVN with only its own assets',
     scoped.rvnBaseUnits === ONE_MILLION_RVN &&
     scoped.assets.length === 1 && scoped.assets[0]?.name === 'ISOLCOIN' &&
-    scoped.assets[0]?.balanceBaseUnits === '100',
+    scoped.assets[0]?.balanceBaseUnits === '40',
     scoped);
 
   // A low-RVN mock: an agent address seeded with 100 RVN cannot pay a

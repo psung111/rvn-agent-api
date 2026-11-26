@@ -393,7 +393,11 @@ async function integrationChecks(): Promise<void> {
 
     // Issue the asset first so the held transfer can actually execute on
     // approval (the mock node refuses transfers of unknown assets).
-    const { address } = (await post('/v1/wallets', {})).json;
+    // Per-address asset balances (v0.42.0): the transfer executes from
+    // the agent's own wallet address, so the coin is issued to it — a
+    // throwaway destination would leave the agent's address holding
+    // none of it and the approval-time funding gate would refuse it.
+    const address = (await get('/v1/wallet/address/agent-1')).json?.address as string;
     const basePolicy = await get('/v1/policies/agent-1');
     const allowlisted = await put('/v1/policies/agent-1', {
       ...basePolicy.json,

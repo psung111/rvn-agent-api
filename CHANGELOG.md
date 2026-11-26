@@ -1,5 +1,88 @@
 # Changelog
 
+## 2026-11-26 — v0.42.0 (Per-address asset balances, slice 2 — item partial)
+
+- Per-address asset balances: the funding check's asset leg and the
+  transfer debit are now per-address, so an agent cannot transfer
+  another agent's assets. `getAssetBalance(assetName, address?)` on the
+  node seam scopes the read to one address — the mock reads that
+  address's holding of the asset (null when it holds none), the real
+  client reads it via `listassetbalancesbyaddress` plus `getassetdata`
+  for the units — and `checkFunding` passes the submitting agent's
+  wallet address, so a transfer is funded only when that address holds
+  the qty. The mock's `transferAsset` debits only the `fromAddress`
+  holding when one is given (a short holding throws and charges no
+  miner fee), while a transfer without one keeps the old
+  debit-from-wherever behavior for direct node calls.
+  `listWalletBalances(address)` is per-address on the mock too (only
+  the assets that address holds), matching the real client, which
+  already read per-address assets that way — so `GET
+  /v1/wallet/balances?agentId=` now scopes both figures to the agent's
+  address. On a real node the funding check is the enforcement point,
+  as with RVN in v0.41.0: ravend's `transfer` still moves wallet-owned
+  assets regardless of address.
+- Adapters keep the "cover every route" invariant with no new tool: the
+  MCP / LangChain `get_wallet_balances` / `get_wallet_address`
+  descriptions now name the per-address asset list, and the OpenAPI
+  spec's balances and address descriptions do too (the drift test
+  covers them). `initialize` now reports server version 0.42.0
+  (`src/mcp.ts`, `package.json`, `langchain_rvn/pyproject.toml`);
+  README "Per-agent wallets" section rewritten around the per-address
+  asset leg.
+- New `pnpm test:per-address-assets`
+  (`demo/per-address-asset-test.ts`, 35 checks): mock per-address
+  reads and debiting incl. the insufficient-holding throw and the
+  no-fromAddress fallback, real-client stubbed-fetch units incl. the
+  null per-address list, and booted-API integrations — agent-1 issues
+  to its own address and transfers onward while the agent-scoped list
+  shows only what it still holds (400 of 500), agent-2's submit and
+  simulate are refused with `INSUFFICIENT_ASSET_BALANCE` and a null
+  balance, and a held transfer by agent-2 is refused at approval time
+  with the hold ending and nothing moved. The suites whose flows
+  issued to a throwaway address and then transferred had to move the
+  issue onto the transferring agent's own wallet address (funding,
+  funding-gate, miner-fee, simulate, telegram-callback, metrics,
+  hold-aging, webhook, quorum §6, mcp-smoke §8/§27, per-agent-wallet
+  mock units, wallet-test, the LangChain adapter test);
+  ratelimit-test's helpers now issue to each agent's own address and
+  transfer to it, so the rate-limit buckets are exercised without
+  tripping the anomaly burst flag (a transfer to a first-seen
+  destination would hold on `ANOMALY_SUSPECTED` instead). `pnpm demo`,
+  `pnpm mcp-smoke`, `pnpm test:approvals`,
+  `pnpm test:telegram-callback`, `pnpm test:simulate`,
+  `pnpm test:reissue`, `pnpm test:subasset`, `pnpm test:unique`,
+  `pnpm test:presets`, `pnpm test:anomaly`, `pnpm test:store`,
+  `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`,
+  `pnpm test:hold-aging`, `pnpm test:policy-history`,
+  `pnpm test:funding`, `pnpm test:funding-gate`,
+  `pnpm test:miner-fee`, `pnpm test:wallet`,
+  `pnpm test:guardrail`, `pnpm test:wallets`,
+  `pnpm test:per-address-assets`, `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:per-address-assets`
+  script. No local Postgres on this VM, so the Postgres live legs were
+  skipped (as in recent sessions); the slice needs no migration. The
+  real-node `listassetbalancesbyaddress` path is implemented against
+  the documented RPC shape and is NOT verified against a live ravend
+  (no live node here) — the mock leg and the stubbed-fetch units are
+  what the suite exercises. Two harness notes: the sweep's back-to-back
+  runs left stale API children holding test ports (telegram-callback
+  then failed on a leftover DEMOCOIN, and three suites crashed on
+  `EADDRINUSE`-style boot failures) — killing the strays and re-running
+  individually went green, no product code at fault; and the sweep
+  loop itself used three wrong filenames (`presets`/`migrations`/
+  `webhooks` for `preset`/`migration`/`webhook`), which also only
+  failed the harness, not the product.
+- Remainder of the per-agent wallets item: per-agent ravend wallets on
+  a real node.
+
 ## 2026-11-25 — v0.41.0 (Per-agent wallets, slice 1 — item partial)
 
 - Per-agent wallet addresses + per-agent RVN funding: the API no longer

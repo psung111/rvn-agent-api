@@ -126,7 +126,12 @@ def main():
         check("policy reads back wildcard",
               client.get_policy()["allowedDestinations"] == ["*"])
 
-        issued = client.issue_asset("LCADAPTER", "100", DEST)
+        # Per-address asset balances (v0.42.0): the agent can only
+        # transfer assets its own wallet address holds, so the coin is
+        # issued to the agent's wallet address, then 10 move onward to
+        # DEST — the agent-scoped balances below read 90, not 100.
+        own_address = client.get_wallet_address()["address"]
+        issued = client.issue_asset("LCADAPTER", "100", own_address)
         check("client issue ALLOW with txid",
               issued["decision"]["kind"] == "ALLOW" and bool(issued.get("txid")), issued)
 
@@ -222,7 +227,7 @@ def main():
               balances.get("rvnBaseUnits", "").isdigit()
               and int(balances["rvnBaseUnits"]) < 1_000_000 * 10**8
               and any(a.get("name") == "LCADAPTER"
-                      and a.get("balanceBaseUnits") == "100"
+                      and a.get("balanceBaseUnits") == "90"
                       for a in balances.get("assets", [])),
               balances)
         tool_balances = json.loads(by_name["get_wallet_balances"].invoke({"agent_id": AGENT}))

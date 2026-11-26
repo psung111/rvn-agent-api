@@ -329,8 +329,9 @@ def build_tools(client: RvnApiClient) -> list:
         """Read the wallet's balances: the RVN balance plus every asset
         balance the wallet holds (nonzero only), so an agent can see what
         the wallet can fund without simulating an intent for each asset.
-        With agent_id the RVN figure is that agent's own wallet balance
-        (v0.41.0); the asset list stays wallet-wide. All quantities are
+        With agent_id both figures are that agent's own wallet balance
+        (v0.41.0 for RVN, v0.42.0 for assets — the asset list is what
+        that address holds). All quantities are
         decimal strings in base units. Read-only."""
         try:
             return _dump(client.get_wallet_balances(agent_id or None))
@@ -342,7 +343,10 @@ def build_tools(client: RvnApiClient) -> list:
         """Read an agent's stable wallet address (v0.41.0): minted from
         the node on first call and tracked afterwards — the same address
         on every call. Funding checks and fee debiting use this address,
-        so one agent cannot spend another's RVN. Read-only in the funds
+        so one agent cannot spend another's RVN, and since v0.42.0 the
+        funding check's asset leg and the mock's transfer debit read
+        this address too, so one agent cannot transfer another's assets.
+        Read-only in the funds
         sense: provisioning the address moves no funds."""
         try:
             return _dump(client.get_wallet_address(agent_id or None))

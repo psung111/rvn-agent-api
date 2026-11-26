@@ -310,12 +310,23 @@ async function main(): Promise<void> {
     const wallet = (await post('/v1/wallets', {})).json?.address as string;
     check('wallet provisioned', typeof wallet === 'string' && wallet.length > 0);
 
+    // Per-address asset balances (v0.42.0): an agent can only transfer
+    // assets its own wallet address holds, so issues go to the issuing
+    // agent's own wallet address (allowlisted alongside the shared
+    // throwaway), and transfers target that same address — a transfer
+    // to a first-seen destination would trip the anomaly burst flag
+    // instead of exercising the rate-limit bucket.
+    const agentWallet = async (agent: string): Promise<string> => {
+      const r = await get(`/v1/wallet/address/${agent}`);
+      return r.json?.address as string;
+    };
     const setPolicy = async (agent: string, extra: Record<string, unknown>) => {
       const base = await get(`/v1/policies/${agent}`);
-      return put(`/v1/policies/${agent}`, { ...base.json, agentId: agent, allowedDestinations: [wallet], ...extra });
+      const w = await agentWallet(agent);
+      return put(`/v1/policies/${agent}`, { ...base.json, agentId: agent, allowedDestinations: [w, wallet], ...extra });
     };
-    const issue = (agent: string, name: string, qty = '100') =>
-      post('/v1/assets/issue', { agentId: agent, name, qty, toAddress: wallet });
+    const issue = async (agent: string, name: string, qty = '100') =>
+      post('/v1/assets/issue', { agentId: agent, name, qty, toAddress: await agentWallet(agent) });
 
     // ---- A. burst then 429, nothing executed ----
     check('policy set for rl-burst (3 ops / 3600s)',
@@ -392,18 +403,23 @@ async function main(): Promise<void> {
       refilled.status === 200 && refilled.json?.decision?.kind === 'ALLOW', refilled);
 
     // ---- E. transfers share the agent bucket ----
-    check('policy set for agent-1 (allowlisted, no rate limit)',
-      (await setPolicy('agent-1', {})).status === 200);
-    const seed = await issue('agent-1', 'RLTRANSFER');
-    check('seed asset for transfer test issued', seed.status === 200, seed);
+    // The seed issue is filed by rl-transfer itself, to its own wallet
+    // address, before the rate limit is set — the issue then spends no
+    // token, and the transfers that follow draw on the coin it holds.
+    const tWallet = await agentWallet('rl-transfer');
+    const tBase = await get('/v1/policies/rl-transfer');
+    check('policy set for rl-transfer (allowlisted, no rate limit yet)',
+      (await put('/v1/policies/rl-transfer', { ...tBase.json, agentId: 'rl-transfer', allowedDestinations: [tWallet, wallet] })).status === 200);
+    const seed = await post('/v1/assets/issue', { agentId: 'rl-transfer', name: 'RLTRANSFER', qty: '100', toAddress: tWallet });
+    check('seed asset for transfer test issued to rl-transfer wallet', seed.status === 200, seed);
     check('policy set for rl-transfer (1 op / 3600s)',
-      (await setPolicy('rl-transfer', { rateLimitMaxOps: 1, rateLimitWindowSeconds: 3600 })).status === 200);
+      (await put('/v1/policies/rl-transfer', { ...tBase.json, agentId: 'rl-transfer', allowedDestinations: [tWallet, wallet], rateLimitMaxOps: 1, rateLimitWindowSeconds: 3600 })).status === 200);
     const t1 = await post('/v1/assets/transfer', {
-      agentId: 'rl-transfer', assetName: 'RLTRANSFER', qty: '10', destination: wallet,
+      agentId: 'rl-transfer', assetName: 'RLTRANSFER', qty: '10', destination: tWallet,
     });
     check('first transfer ALLOWs', t1.status === 200 && t1.json?.decision?.kind === 'ALLOW', t1);
     const t2 = await post('/v1/assets/transfer', {
-      agentId: 'rl-transfer', assetName: 'RLTRANSFER', qty: '10', destination: wallet,
+      agentId: 'rl-transfer', assetName: 'RLTRANSFER', qty: '10', destination: tWallet,
     });
     check('second transfer 429s (same agent bucket)',
       t2.status === 429 && t2.json?.decision?.reasonCodes?.includes('RATE_LIMIT_EXCEEDED'), t2);
@@ -460,8 +476,8 @@ async function main(): Promise<void> {
       (await get('/v1/ratelimit/rl-never-seen')).json?.limited === false);
 
     // ---- I. per-kind bucket only (v0.21.0): issues capped, transfers free ----
-    const transfer = (agent: string, name: string, qty = '10') =>
-      post('/v1/assets/transfer', { agentId: agent, assetName: name, qty, destination: wallet });
+    const transfer = async (agent: string, name: string, qty = '10') =>
+      post('/v1/assets/transfer', { agentId: agent, assetName: name, qty, destination: await agentWallet(agent) });
     check('policy set for rl-kind (2 issues / 3600s, no agent-wide limit)',
       (await setPolicy('rl-kind', {
         rateLimitKindLimits: { issue_asset: { maxOps: 2, windowSeconds: 3600 } },
@@ -482,7 +498,7 @@ async function main(): Promise<void> {
       kindSimIssue.status === 200 && kindSimIssue.json?.decision?.kind === 'DENY' &&
       kindSimIssue.json?.decision?.reasonCodes?.includes('RATE_LIMIT_EXCEEDED'), kindSimIssue);
     const kindSimTransfer = await post('/v1/intents/simulate', {
-      op: 'transfer', agentId: 'rl-kind', assetName: 'RLK1', qty: '10', destination: wallet,
+      op: 'transfer', agentId: 'rl-kind', assetName: 'RLK1', qty: '10', destination: await agentWallet('rl-kind'),
     });
     check('simulate transfer on the same agent still ALLOWs (kind buckets are per-kind)',
       kindSimTransfer.status === 200 && kindSimTransfer.json?.decision?.kind === 'ALLOW', kindSimTransfer);

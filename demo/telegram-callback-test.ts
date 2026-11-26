@@ -218,7 +218,12 @@ async function main() {
   check('health: webhook secret configured', health.approvals?.telegramWebhookSecretConfigured === true);
   check('health: zero per-agent routes', health.approvals?.perAgentChatRoutes === 0);
 
-  const { address } = (await post('/v1/wallets', {})).json;
+  // Per-address asset balances (v0.42.0): the held transfers execute
+  // from the agent's own wallet address on approval, so the coin is
+  // issued to it — a throwaway destination would leave the agent's
+  // address holding none of it and the approval-time funding gate
+  // would refuse them.
+  const address = (await get('/v1/wallet/address/agent-1')).address as string;
   // Allowlist the wallet so the setup issue lands ALLOW (default policy
   // requires approval for non-allowlisted destinations).
   const policy = await get('/v1/policies/agent-1');

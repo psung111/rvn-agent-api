@@ -432,7 +432,12 @@ async function main() {
    * the mock debits the issuance/miner fee from it, so one agent cannot
    * spend another's RVN; the real client ignores it (ravend pays fees
    * from the wallet pool — the funding check is the enforcement point
-   * there). Omit it and the mock debits its operator address.
+   * there). Since v0.42.0 the mock also debits a transfer's asset qty
+   * from it, so one agent cannot transfer another's assets; the real
+   * client still moves wallet-owned assets regardless of address, so
+   * there the funding check remains the enforcement point. Omit it and
+   * the mock debits its operator address (fees) and from wherever the
+   * asset balance lives (transfers).
    */
   const executeIntent = async (intent: RvnIntent, fromAddress?: string): Promise<string> => {
     const p = intent.execParams ?? {};
@@ -904,10 +909,10 @@ async function main() {
    * change what the next submit sees. A node that cannot answer is a
    * 502, like any other node failure (the funding check's funded:null
    * degradation does not apply here — there is no decision to keep, only
-   * the balances). With `?agentId=` the RVN figure is that agent's own
-   * wallet balance (provisioning the address when the agent has none —
-   * the address route does the same explicitly); the asset list stays
-   * wallet-wide until per-address asset balances land. Under auth, a
+   * the balances). With `?agentId=` both figures are that agent's own
+   * wallet address (provisioning the address when the agent has none —
+   * the address route does the same explicitly), so an agent sees only
+   * the assets its own address holds (v0.42.0). Under auth, a
    * per-agent key may only read its own agent's balances.
    */
   app.get('/v1/wallet/balances', async (req, reply) => {

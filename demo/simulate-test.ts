@@ -87,8 +87,12 @@ async function main() {
     const health = await get('/v1/health');
     check('API booted in mock mode', health.ok === true && health.mock === true);
 
-    const { address } = (await post('/v1/wallets', {})).json;
-    check('provisioned a wallet', typeof address === 'string' && address.length > 0);
+    // Per-address asset balances (v0.42.0): the transfer simulations
+    // read the agent's own wallet address, so the coins are issued to
+    // it — a throwaway destination would leave the agent's address
+    // holding none of them.
+    const address = (await get('/v1/wallet/address/sim-agent')).address as string;
+    check('provisioned the agent wallet address', typeof address === 'string' && address.length > 0);
 
     // Tighten the policy for sim-agent: allowlist the wallet, shrink the
     // 24h budget to 1000 so budget accounting is observable.

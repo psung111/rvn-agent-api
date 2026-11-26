@@ -92,7 +92,12 @@ async function main() {
     const health = await req1.get('/v1/health');
     check('API1 booted in mock mode', health.ok === true && health.mock === true);
 
-    const { address } = (await req1.post('/v1/wallets', {})).json;
+    // Per-address asset balances (v0.42.0): transfers debit the
+    // agent's own wallet address, so the coin is issued to it — a
+    // throwaway destination would leave the agent's address holding
+    // none of it and the funding gate would refuse every transfer.
+    const address = (await req1.get('/v1/wallet/address/gate-agent')).address as string;
+    check('agent wallet address provisioned', typeof address === 'string' && address.length > 0);
     const base = await req1.get(`/v1/policies/${AGENT}`);
     const putPolicy = await req1.put(`/v1/policies/${AGENT}`, {
       ...base, agentId: AGENT, allowedDestinations: [address], dailyIssueBudgetBaseUnits: '10000',

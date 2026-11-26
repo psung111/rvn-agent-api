@@ -10,7 +10,10 @@
  * Since v0.41.0 the RVN legs read the submitting agent's own wallet
  * address (when the server resolved one) instead of the wallet-wide
  * balance, so one agent's fees cannot drain what another agent
- * simulates against; the asset leg is still wallet-wide in this slice.
+ * simulates against. Since v0.42.0 the asset leg does the same: a
+ * transfer is funded only when the agent's own wallet address holds
+ * the qty — an agent cannot transfer another agent's assets, and the
+ * check agrees with the mock's per-address transfer debit.
  *
  * The fees are Ravencoin consensus issuance fees, in RVN base units
  * (1 RVN = 10^8 base units): issue 500 RVN, reissue 100 RVN, sub-asset
@@ -180,8 +183,8 @@ export interface FundingCheck {
  * one agent's issue fee cannot drain the balance another agent
  * simulates against. Omit it (simulate before any address exists, or
  * a caller that could not resolve one) for the wallet-wide balance, as
- * before. The asset leg stays wallet-wide in this slice — per-address
- * asset balances are the next slice of per-agent wallets.
+ * before. Since v0.42.0 the asset leg reads the same address too: a
+ * transfer is funded only when that address holds the qty.
  *
  * The miner fee rides on top of the base requirement. For a
  * supply-creating op the RVN requirement is issuance fee + estimated
@@ -255,9 +258,13 @@ export async function checkFunding(
   }
 
   // Transfer: the asset qty is the top-level requirement; the miner fee
-  // is a second RVN leg, checked only once the asset leg passes.
+  // is a second RVN leg, checked only once the asset leg passes. The
+  // asset leg reads the agent's own wallet address when known (v0.42.0)
+  // — the mock debits transfers from that same address, so check and
+  // execution agree per agent; without an address the wallet-wide
+  // balance, as before.
   try {
-    const balance = await node.getAssetBalance(requirement.asset);
+    const balance = await node.getAssetBalance(requirement.asset, walletAddress);
     if (balance === null || BigInt(balance) < BigInt(requirement.requiredBaseUnits)) {
       // The wallet holds none of the asset (or too little of it): that is
       // a funding failure, not an unknown — a transfer the wallet cannot

@@ -431,7 +431,12 @@ async function main() {
     const health = await get('/v1/health');
     check('health reports webhooks configured', health.webhooks?.configured === true && health.webhooks?.endpoints === 1, health.webhooks);
 
-    const { address } = (await post('/v1/wallets', {})).json;
+    // Per-address asset balances (v0.42.0): the held transfer executes
+    // from the agent's own wallet address on approval, so the coin is
+    // issued to it — a throwaway destination would leave the agent's
+    // address holding none of it and the approval-time funding gate
+    // would refuse it.
+    const address = (await get('/v1/wallet/address/agent-1')).address as string;
     const policy = await get('/v1/policies/agent-1');
     const putPolicy = await fetch(`${API}/v1/policies/agent-1`, {
       method: 'PUT',

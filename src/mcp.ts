@@ -386,8 +386,9 @@ const TOOLS: ToolDef[] = [
       'Read the wallet\'s balances (GET /v1/wallet/balances): the RVN balance plus every asset ' +
       'balance the wallet holds, so an operator or monitoring agent can see what the wallet can ' +
       'fund without simulating an intent for each asset. Only assets with a nonzero wallet balance ' +
-      'are listed. All quantities are decimal strings in base units. With agentId, the RVN figure ' +
-      'is that agent\'s own wallet balance (v0.41.0); the asset list stays wallet-wide. Read-only — polling it writes ' +
+      'are listed. All quantities are decimal strings in base units. With agentId, both figures ' +
+      'are that agent\'s own wallet balance (v0.41.0 for RVN, v0.42.0 for assets — the asset list ' +
+      'is what that address holds). Read-only — polling it writes ' +
       'nothing, so it cannot change what the next submit sees.',
     inputSchema: {
       type: 'object',
@@ -402,7 +403,8 @@ const TOOLS: ToolDef[] = [
       'Read an agent\'s stable wallet address (GET /v1/wallet/address/:agentId, v0.41.0): minted ' +
       'from the node on first call and tracked in the store afterwards — the same address on ' +
       'every call. Funding checks and fee debiting use this address, so one agent cannot spend ' +
-      'another\'s RVN. Read-only in the funds sense: provisioning the address moves no funds.',
+      'another\'s RVN, and since v0.42.0 the funding check\'s asset leg and the mock\'s transfer ' +
+      'debit read this address too, so one agent cannot transfer another\'s assets. Read-only in the funds sense: provisioning the address moves no funds.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -769,7 +771,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.41.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.42.0' },
       });
     }
     case 'notifications/initialized':

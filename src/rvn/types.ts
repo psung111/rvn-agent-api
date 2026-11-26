@@ -27,6 +27,15 @@ export interface RvnNode {
    * fees from the wallet UTXO pool regardless of address, so per-agent
    * isolation on a real node is enforced at the funding-check layer,
    * not at execution. Omit it and the mock debits its operator address.
+   *
+   * For `transferAsset`, `fromAddress` (v0.42.0) is also the address the
+   * asset qty is debited from in the mock: an agent can only transfer
+   * assets its own wallet address holds, so one agent cannot spend
+   * another's assets. The real client ignores it the same way as the
+   * fee — ravend moves wallet-owned assets regardless of address — so
+   * on a real node the funding check is the enforcement point there
+   * too. Omit it and the mock debits from wherever the balance lives,
+   * as before (direct node calls keep their previous behavior).
    */
   issueAsset(opts: {
     name: string;
@@ -90,8 +99,16 @@ export interface RvnNode {
    * ('0' when the mock knows nothing about it), the real client sums
    * the address's UTXOs via `listunspent`. Omit the address for the
    * wallet-wide balance, as before.
+   *
+   * `getAssetBalance(assetName, address)` (v0.42.0) scopes the asset
+   * read the same way — the mock reads that address's holding of the
+   * asset, the real client reads it via `listassetbalancesbyaddress`
+   * — so the funding check's asset leg is per-agent too: an agent
+   * whose wallet address holds none of the asset is refused even when
+   * the wallet as a whole holds plenty. Null when that address holds
+   * none of it. Omit the address for the wallet-wide balance.
    */
-  getAssetBalance(assetName: string): Promise<string | null>;
+  getAssetBalance(assetName: string, address?: string): Promise<string | null>;
   getRvnBalance(address?: string): Promise<string>;
 
   /**
@@ -112,9 +129,12 @@ export interface RvnNode {
    * nonzero wallet balance are listed — an asset fully transferred out
    * disappears from the list (same as ravend's `listmyassets`).
    *
-   * `listWalletBalances(address)` (v0.41.0) scopes the RVN balance to
-   * one agent's wallet address; the asset list stays wallet-wide until
-   * per-address asset balances land (slice 2 of per-agent wallets).
+   * `listWalletBalances(address)` (v0.41.0 for RVN, v0.42.0 for assets)
+   * scopes both figures to one agent's wallet address — the mock reads
+   * that address's RVN and asset holdings, the real client reads RVN
+   * via `listunspent` and assets via `listassetbalancesbyaddress` —
+   * so an agent sees only what its own address can fund. Omit the
+   * address for the wallet-wide balances, as before.
    */
   listWalletBalances(address?: string): Promise<WalletBalances>;
 }

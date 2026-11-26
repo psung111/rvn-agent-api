@@ -1128,6 +1128,49 @@ and logs the result in CHANGELOG.md.
     per-address asset balances (the funding check's asset leg and the
     transfer debit, so an agent cannot transfer another agent's
     assets) and per-agent ravend wallets on a real node.
+  - [x] 2026-11-26 — v0.42.0 per-address asset balances (slice 2, item
+    partial): the funding check's asset leg and the transfer debit are
+    now per-address. `getAssetBalance(assetName, address?)` on the node
+    seam scopes the read to one address — the mock reads that address's
+    holding of the asset (null when it holds none), the real client
+    reads it via `listassetbalancesbyaddress` + `getassetdata` for the
+    units — and `checkFunding` passes the submitting agent's wallet
+    address, so a transfer is funded only when that address holds the
+    qty. The mock's `transferAsset` debits only the `fromAddress`
+    holding when one is given (an agent cannot transfer another
+    agent's assets; a short holding throws and charges no miner fee),
+    while a transfer without one keeps the old debit-from-wherever
+    behavior for direct node calls. `listWalletBalances(address)` is
+    per-address on the mock too (only the assets that address holds),
+    matching the real client, which already read per-address assets
+    that way. On a real node the funding check is the enforcement
+    point, as with RVN in v0.41.0: ravend's `transfer` still moves
+    wallet-owned assets regardless of address. `GET
+    /v1/wallet/balances?agentId=` now scopes both figures to the
+    agent's address. No new route or tool: the MCP / LangChain
+    `get_wallet_balances` / `get_wallet_address` descriptions now name
+    the per-address asset list, and the OpenAPI spec's balances and
+    address descriptions do too. Verified with new
+    `pnpm test:per-address-assets` (`demo/per-address-asset-test.ts`,
+    35 checks: mock per-address reads and debiting incl. the
+    insufficient-holding throw and the no-fromAddress fallback,
+    real-client stubbed-fetch units incl. the null list, and booted-API
+    integrations — agent-1 issues to its own address and transfers
+    onward while the agent-scoped list shows only what it still holds,
+    agent-2's submit and simulate are refused with
+    INSUFFICIENT_ASSET_BALANCE and a null balance, and a held transfer
+    by agent-2 is refused at approval time with the hold ending and
+    nothing moved). The suites whose flows issued to a throwaway
+    address and then transferred had to move the issue onto the
+    transferring agent's own wallet address (funding, funding-gate,
+    miner-fee, simulate, telegram-callback, metrics, hold-aging,
+    webhook, quorum §6, mcp-smoke §8/§27, per-agent-wallet mock units,
+    wallet-test, the LangChain adapter test); ratelimit-test's helpers
+    now issue to each agent's own address and transfer to it, so the
+    rate-limit buckets are exercised without tripping the anomaly
+    burst flag. `pnpm demo`, `pnpm mcp-smoke`, and every `test:*`
+    suite still green. Remainder: per-agent ravend wallets on a real
+    node.
 
 ## Done
 

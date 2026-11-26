@@ -163,17 +163,23 @@ async function main(): Promise<void> {
   const walletA = (await (await fetch(`${API}/v1/wallets`, { method: 'POST' })).json() as any).address as string;
   const walletB = (await (await fetch(`${API}/v1/wallets`, { method: 'POST' })).json() as any).address as string;
   check('provisioned two wallets', !!walletA && !!walletB);
+  // Per-address asset balances (v0.42.0): the agent can only transfer
+  // assets its own wallet address holds, so the coin is issued to the
+  // agent's wallet address (fetched through the MCP tool itself).
+  const agentWallet = (await toolCall('get_wallet_address', { agentId: agent })).body?.address as string;
+  check('get_wallet_address via MCP returns the agent wallet', typeof agentWallet === 'string' && agentWallet.length > 0, agentWallet);
 
-  // Allowlist the issue destination only, so the issue executes (ALLOW) but the
-  // transfer to the other wallet is held (REQUIRE_APPROVAL). Also dogfoods set_policy.
+  // Allowlist the agent wallet and the later sections' issue destination,
+  // so the issue executes (ALLOW) but the transfer to the other wallet is
+  // held (REQUIRE_APPROVAL). Also dogfoods set_policy.
   const seedPolicy = await toolCall('get_policy', { agentId: agent });
   const seed = await toolCall('set_policy', {
     agentId: agent,
-    policy: { ...seedPolicy.body, agentId: agent, allowedDestinations: [walletA] },
+    policy: { ...seedPolicy.body, agentId: agent, allowedDestinations: [agentWallet, walletA] },
   });
-  check('set_policy allowlisted the issue wallet', seed.ok && seed.body.httpStatus === 200, seed.body);
+  check('set_policy allowlisted the agent wallet', seed.ok && seed.body.httpStatus === 200, seed.body);
 
-  const issue = await toolCall('issue_asset', { agentId: agent, name: coin, qty: '500', toAddress: walletA });
+  const issue = await toolCall('issue_asset', { agentId: agent, name: coin, qty: '500', toAddress: agentWallet });
   check('issue_asset via MCP is ALLOW', issue.ok && issue.body.decision?.kind === 'ALLOW', issue.body);
 
   // Transfer to an unallowlisted destination -> REQUIRE_APPROVAL (202, not an error).
@@ -216,12 +222,12 @@ async function main(): Promise<void> {
   // 12. simulate via MCP: dry run through the policy engine
   const auditBefore = (await (await fetch(`${API}/v1/audit?limit=1`)).json() as any);
   const simAllow = await toolCall('simulate_intent', {
-    op: 'issue', agentId: agent, assetName: 'SMOKESIM', qty: '500', destination: walletA,
+    op: 'issue', agentId: agent, assetName: 'SMOKESIM', qty: '500', destination: agentWallet,
   });
   check('simulate_intent ALLOW via MCP',
     simAllow.ok && simAllow.body.simulated === true && simAllow.body.decision?.kind === 'ALLOW', simAllow.body);
   const simDeny = await toolCall('simulate_intent', {
-    op: 'issue', agentId: agent, assetName: 'SMOKESIM', qty: '500000', destination: walletA,
+    op: 'issue', agentId: agent, assetName: 'SMOKESIM', qty: '500000', destination: agentWallet,
   });
   check('simulate_intent DENY surfaces isError',
     !simDeny.ok && simDeny.body.decision?.kind === 'DENY', simDeny.body);
@@ -231,28 +237,28 @@ async function main(): Promise<void> {
 
   // 13. reissue via MCP: issue a coin, reissue it, verify the supply grew
   const reCoin = `SMOKEREI${Date.now() % 1_000_000}`;
-  const rIssue = await toolCall('issue_asset', { agentId: agent, name: reCoin, qty: '1000', toAddress: walletA });
+  const rIssue = await toolCall('issue_asset', { agentId: agent, name: reCoin, qty: '1000', toAddress: agentWallet });
   check('reissue setup: issue via MCP is ALLOW', rIssue.ok && rIssue.body.decision?.kind === 'ALLOW', rIssue.body);
-  const rReissue = await toolCall('reissue_asset', { agentId: agent, name: reCoin, qty: '250', toAddress: walletA });
+  const rReissue = await toolCall('reissue_asset', { agentId: agent, name: reCoin, qty: '250', toAddress: agentWallet });
   check('reissue_asset via MCP is ALLOW with txid',
     rReissue.ok && rReissue.body.decision?.kind === 'ALLOW' && !!rReissue.body.txid, rReissue.body);
   const reAfter = (await (await fetch(`${API}/v1/assets/${reCoin}`)).json() as any);
   check('reissue grew the supply to 1250', reAfter.amount === '1250', reAfter);
-  const rCap = await toolCall('reissue_asset', { agentId: agent, name: reCoin, qty: '200000', toAddress: walletA });
+  const rCap = await toolCall('reissue_asset', { agentId: agent, name: reCoin, qty: '200000', toAddress: agentWallet });
   check('reissue over cap surfaces isError',
     !rCap.ok && rCap.body.decision?.kind === 'DENY', rCap.body);
   const rSim = await toolCall('simulate_intent', {
-    op: 'reissue', agentId: agent, assetName: reCoin, qty: '10', destination: walletA,
+    op: 'reissue', agentId: agent, assetName: reCoin, qty: '10', destination: agentWallet,
   });
   check('simulate_intent supports op:reissue',
     rSim.ok && rSim.body.simulated === true && rSim.body.decision?.kind === 'ALLOW', rSim.body);
 
   // 14. sub-asset via MCP: issue a parent, issue a sub-asset, verify it exists
   const subParent = `SMOKESUB${Date.now() % 1_000_000}`;
-  const sIssue = await toolCall('issue_asset', { agentId: agent, name: subParent, qty: '1000', toAddress: walletA });
+  const sIssue = await toolCall('issue_asset', { agentId: agent, name: subParent, qty: '1000', toAddress: agentWallet });
   check('subasset setup: issue parent via MCP is ALLOW', sIssue.ok && sIssue.body.decision?.kind === 'ALLOW', sIssue.body);
   const sSub = await toolCall('issue_subasset', {
-    agentId: agent, name: `${subParent}/CHILD`, qty: '400', toAddress: walletA, units: 2,
+    agentId: agent, name: `${subParent}/CHILD`, qty: '400', toAddress: agentWallet, units: 2,
   });
   check('issue_subasset via MCP is ALLOW with txid',
     sSub.ok && sSub.body.decision?.kind === 'ALLOW' && !!sSub.body.txid, sSub.body);
@@ -260,22 +266,22 @@ async function main(): Promise<void> {
   check('sub-asset created with amount 400 and units 2',
     subAfter.amount === '400' && subAfter.units === 2, subAfter);
   const sBad = await toolCall('issue_subasset', {
-    agentId: agent, name: 'SMOKENOPARENT/CHILD', qty: '10', toAddress: walletA,
+    agentId: agent, name: 'SMOKENOPARENT/CHILD', qty: '10', toAddress: agentWallet,
   });
   check('sub-asset under unknown parent surfaces an error',
     !sBad.ok && sBad.body.error, sBad.body);
   const sSim = await toolCall('simulate_intent', {
-    op: 'subasset', agentId: agent, assetName: `${subParent}/SIM`, qty: '10', destination: walletA,
+    op: 'subasset', agentId: agent, assetName: `${subParent}/SIM`, qty: '10', destination: agentWallet,
   });
   check('simulate_intent supports op:subasset',
     sSim.ok && sSim.body.simulated === true && sSim.body.decision?.kind === 'ALLOW', sSim.body);
 
   // 15. unique asset via MCP: issue a root, issue a unique under it, verify singleton
   const uParent = `SMOKEUNQ${Date.now() % 1_000_000}`;
-  const uIssue = await toolCall('issue_asset', { agentId: agent, name: uParent, qty: '1000', toAddress: walletA });
+  const uIssue = await toolCall('issue_asset', { agentId: agent, name: uParent, qty: '1000', toAddress: agentWallet });
   check('unique setup: issue root via MCP is ALLOW', uIssue.ok && uIssue.body.decision?.kind === 'ALLOW', uIssue.body);
   const uUniq = await toolCall('issue_unique', {
-    agentId: agent, name: `${uParent}#TOKEN001`, toAddress: walletA, ipfsHash: 'QmSmokeUnique',
+    agentId: agent, name: `${uParent}#TOKEN001`, toAddress: agentWallet, ipfsHash: 'QmSmokeUnique',
   });
   check('issue_unique via MCP is ALLOW with txid',
     uUniq.ok && uUniq.body.decision?.kind === 'ALLOW' && !!uUniq.body.txid, uUniq.body);
@@ -283,12 +289,12 @@ async function main(): Promise<void> {
   check('unique created as singleton (amount 1, units 0, not reissuable, ipfs set)',
     uniqAfter.amount === '1' && uniqAfter.units === 0 && uniqAfter.reissuable === false && uniqAfter.ipfsHash === 'QmSmokeUnique', uniqAfter);
   const uBad = await toolCall('issue_unique', {
-    agentId: agent, name: 'SMOKENOROOT#TOKEN001', toAddress: walletA,
+    agentId: agent, name: 'SMOKENOROOT#TOKEN001', toAddress: agentWallet,
   });
   check('unique under unknown root surfaces an error',
     !uBad.ok && uBad.body.error, uBad.body);
   const uSim = await toolCall('simulate_intent', {
-    op: 'unique', agentId: agent, assetName: `${uParent}#SIM001`, destination: walletA,
+    op: 'unique', agentId: agent, assetName: `${uParent}#SIM001`, destination: agentWallet,
   });
   check('simulate_intent supports op:unique',
     uSim.ok && uSim.body.simulated === true && uSim.body.decision?.kind === 'ALLOW', uSim.body);
@@ -474,7 +480,7 @@ async function main(): Promise<void> {
   // Decision schema carries the full reason-code enum.
   const spec = await toolCall('get_openapi', {});
   check('get_openapi via MCP returns the OpenAPI 3.0.3 contract at the package version',
-    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.41.0' &&
+    spec.ok && spec.body.openapi === '3.0.3' && spec.body.info?.version === '0.42.0' &&
     typeof spec.body.paths === 'object' && '/v1/assets/issue' in spec.body.paths &&
     '/v1/openapi.json' in spec.body.paths && '/v1/docs' in spec.body.paths &&
     Array.isArray(spec.body.components?.schemas?.Decision?.properties?.reasonCodes?.items?.enum) &&
@@ -485,7 +491,7 @@ async function main(): Promise<void> {
   const docs = await toolCall('get_docs', {});
   check('get_docs via MCP returns the docs HTML at the package version',
     docs.ok && docs.body.httpStatus === 200 && typeof docs.body.html === 'string' &&
-    docs.body.html.includes(`<title>rvn-agent-api 0.41.0 — API docs</title>`) &&
+    docs.body.html.includes(`<title>rvn-agent-api 0.42.0 — API docs</title>`) &&
     docs.body.html.includes('/v1/assets/issue') && docs.body.html.includes('/v1/docs') &&
     docs.body.html.includes('<h2>Decision model</h2>') &&
     docs.body.html.includes('<code>RATE_LIMIT_EXCEEDED</code>'), docs.body.html?.slice(0, 200));
@@ -521,23 +527,26 @@ async function main(): Promise<void> {
   check('rollback_policy via MCP errors on an unknown version',
     !rbBad.ok && rbBad.body.httpStatus === 404, rbBad.body);
 
-  // 27. get_wallet_balances via MCP (v0.38.0; per-agent since v0.41.0) —
-  // issue a coin, then the wallet balances list it with the issued qty;
-  // the agent-scoped RVN balance is a decimal string below the 1,000,000
-  // RVN the mock starts each agent wallet with (fees were paid), and the
-  // read writes nothing to the audit chain. A fresh agent: the shared
-  // smoke agent's per-kind issue bucket (section 18) is exhausted for
-  // the hour.
+  // 27. get_wallet_balances via MCP (v0.38.0; per-agent since v0.41.0;
+  // per-address assets since v0.42.0) — issue a coin to the agent's own
+  // wallet address, then the agent-scoped balances list it with the
+  // issued qty; the agent-scoped RVN balance is a decimal string below
+  // the 1,000,000 RVN the mock starts each agent wallet with (fees were
+  // paid), and the read writes nothing to the audit chain. A fresh
+  // agent: the shared smoke agent's per-kind issue bucket (section 18)
+  // is exhausted for the hour.
   const wAgent = 'mcp-smoke-wallet';
+  const wWallet = (await toolCall('get_wallet_address', { agentId: wAgent })).body?.address as string;
+  check('wallet-balances agent wallet address provisioned', typeof wWallet === 'string' && wWallet.length > 0, wWallet);
   const wPolicy = await toolCall('get_policy', { agentId: wAgent });
   const wSet = await toolCall('set_policy', {
     agentId: wAgent,
-    policy: { ...wPolicy.body, agentId: wAgent, allowedDestinations: [walletA] },
+    policy: { ...wPolicy.body, agentId: wAgent, allowedDestinations: [wWallet] },
   });
   check('set_policy for the wallet-balances agent via MCP 200s',
     wSet.ok && wSet.body.httpStatus === 200, wSet.body);
   const wCoin = `SMOKEMCPW${Date.now() % 1_000_000}`;
-  const wIssue = await toolCall('issue_asset', { agentId: wAgent, name: wCoin, qty: '1234', toAddress: walletA });
+  const wIssue = await toolCall('issue_asset', { agentId: wAgent, name: wCoin, qty: '1234', toAddress: wWallet });
   check('issue for the wallet-balances check ALLOWs via MCP',
     wIssue.ok && wIssue.body.decision?.kind === 'ALLOW', wIssue.body);
   const auditBeforeWallet = await toolCall('get_audit', { limit: 100 });

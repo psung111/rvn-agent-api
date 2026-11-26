@@ -176,7 +176,12 @@ async function main(): Promise<void> {
       fresh.json?.store === 'memory' && fresh.json?.audit?.entries === 0 &&
       fresh.json?.audit?.chainValid === true, fresh.json);
 
-    const { address } = (await post('/v1/wallets', {})).json;
+    // Per-address asset balances (v0.42.0): the held transfer executes
+    // from the agent's own wallet address on approval, so the coin is
+    // issued to it — a throwaway destination would leave the agent's
+    // address holding none of it and the approval-time funding gate
+    // would refuse it.
+    const address = (await get('/v1/wallet/address/agent-1')).json?.address as string;
     const policy = await get('/v1/policies/agent-1');
     const putPolicy = await put('/v1/policies/agent-1', {
       ...policy.json, agentId: 'agent-1', allowedDestinations: [address],

@@ -70,20 +70,25 @@ function mockChainFromEnv(): string {
  * RvnNode interface as the real RPC client, so the API can't tell them apart.
  * No chain, no network, no funds — pure state machine.
  *
- * Wallet semantics (v0.36.0, per-agent since v0.41.0): RVN is tracked
- * per address. The mock seeds one operator address at construction with
- * MOCK_RVN_BALANCE_BASE_UNITS (default 1,000,000 RVN) — that is the old
- * single shared balance, so a fresh mock still reports it wallet-wide
- * and direct node calls without a fromAddress debit it. Each per-agent
- * wallet address minted with the `rvn-agent-api:` label is seeded with
- * the same default on mint, like a faucet, so an agent's funding check
- * and fee debiting see its own balance and one agent cannot spend
- * another's RVN. Throwaway addresses (POST /v1/wallets) are not
- * seeded — they hold nothing. Asset balances are still wallet-wide:
- * every balance the ledger records is treated as wallet-held (see
- * getAssetBalance), which is what makes the funding check agree with
- * execution for transfers; per-address asset balances are slice 2.
- * The wallet-wide RVN read is the sum of every seeded address.
+ * Wallet semantics (v0.36.0, per-agent since v0.41.0, per-address
+ * assets since v0.42.0): RVN is tracked per address. The mock seeds one
+ * operator address at construction with MOCK_RVN_BALANCE_BASE_UNITS
+ * (default 1,000,000 RVN) — that is the old single shared balance, so
+ * a fresh mock still reports it wallet-wide and direct node calls
+ * without a fromAddress debit it. Each per-agent wallet address minted
+ * with the `rvn-agent-api:` label is seeded with the same default on
+ * mint, like a faucet, so an agent's funding check and fee debiting
+ * see its own balance and one agent cannot spend another's RVN.
+ * Throwaway addresses (POST /v1/wallets) are not seeded — they hold
+ * nothing. Asset balances are tracked per address too: an issue credits
+ * the destination address, a transfer with a fromAddress debits only
+ * that address (an agent can only transfer assets its own wallet
+ * address holds), and the funding check reads the same address — so
+ * check and execution agree per agent. A transfer without a
+ * fromAddress (a direct node call) still debits from wherever the
+ * balance lives, as before. The wallet-wide RVN read is the sum of
+ * every seeded address, and the wallet-wide asset read is the sum over
+ * every address.
  */
 export class MockRvnNode implements RvnNode {
   private assets = new Map<string, AssetInfo & { balances: Map<string, bigint> }>();
@@ -219,16 +224,29 @@ export class MockRvnNode implements RvnNode {
         `insufficient RVN balance for transfer miner fee (needs ${minerFee}, wallet holds ${feeBalance})`,
       );
     }
-    // Debit the issuer's first address holding enough (mock simplification:
-    // debit from wherever the balance lives, preferring the first holder).
-    let remaining = amount;
-    for (const [addr, bal] of asset.balances) {
-      if (remaining <= 0n) break;
-      const take = bal < remaining ? bal : remaining;
-      asset.balances.set(addr, bal - take);
-      remaining -= take;
+    // Per-address asset balances (v0.42.0): with a fromAddress the
+    // transfer debits only that address — an agent can only transfer
+    // assets its own wallet address holds, so one agent cannot spend
+    // another's assets, and the funding check (which reads the same
+    // address) agrees with execution. Without a fromAddress this is a
+    // direct node call, so the old behavior stands: debit from wherever
+    // the balance lives, preferring the first holder.
+    if (fromAddress !== undefined) {
+      const held = asset.balances.get(fromAddress) ?? 0n;
+      if (held < amount) {
+        throw new Error(`insufficient ${name} balance at ${fromAddress}`);
+      }
+      asset.balances.set(fromAddress, held - amount);
+    } else {
+      let remaining = amount;
+      for (const [addr, bal] of asset.balances) {
+        if (remaining <= 0n) break;
+        const take = bal < remaining ? bal : remaining;
+        asset.balances.set(addr, bal - take);
+        remaining -= take;
+      }
+      if (remaining > 0n) throw new Error(`insufficient ${name} balance`);
     }
-    if (remaining > 0n) throw new Error(`insufficient ${name} balance`);
     this.addresses.add(toAddress);
     asset.balances.set(toAddress, (asset.balances.get(toAddress) ?? 0n) + amount);
     this.rvnBalances.set(feeAddress, feeBalance - minerFee);
@@ -349,15 +367,23 @@ export class MockRvnNode implements RvnNode {
     return info;
   }
 
-  async getAssetBalance(assetName: string): Promise<string | null> {
+  async getAssetBalance(assetName: string, address?: string): Promise<string | null> {
     const asset = this.assets.get(assetName.toUpperCase());
     if (!asset) return null;
-    // The mock has no separate wallet: every balance the ledger records
-    // is wallet-held, so the total is the balance — and it is exactly
-    // what transferAsset can debit, so the check and the execution agree.
+    // Per-address asset balances (v0.42.0): with an address, only what
+    // that address holds — null when it holds none of the asset, so the
+    // funding check refuses an agent whose wallet address holds nothing
+    // even when the wallet as a whole holds plenty. Without an address
+    // the wallet-wide total, as before — and it is exactly what a
+    // transfer without a fromAddress can debit, so the check and the
+    // execution agree there too.
+    if (address !== undefined) {
+      const held = asset.balances.get(address) ?? 0n;
+      return held > 0n ? held.toString() : null;
+    }
     let total = 0n;
     for (const bal of asset.balances.values()) total += bal;
-    return total.toString();
+    return total > 0n ? total.toString() : null;
   }
 
   async getRvnBalance(address?: string): Promise<string> {
@@ -374,18 +400,23 @@ export class MockRvnNode implements RvnNode {
   }
 
   async listWalletBalances(address?: string): Promise<WalletBalances> {
-    // Same wallet semantics as getAssetBalance: every balance the
-    // ledger records is wallet-held. Assets fully transferred out
-    // (total 0) are not listed, matching ravend's `listmyassets`. The
-    // RVN figure is the agent's own balance when an address is given
-    // (v0.41.0); the asset list stays wallet-wide until per-address
-    // asset balances land (slice 2 of per-agent wallets).
+    // Per-address asset balances (v0.42.0): with an address, only the
+    // assets that address holds (nonzero) — an asset fully transferred
+    // out of that address disappears from its list, matching ravend's
+    // `listassetbalancesbyaddress`. Without an address the wallet-wide
+    // list, as before. The RVN figure is the agent's own balance when
+    // an address is given (v0.41.0).
     const assets: WalletAssetBalance[] = [];
     for (const asset of this.assets.values()) {
-      let total = 0n;
-      for (const bal of asset.balances.values()) total += bal;
-      if (total > 0n) {
-        assets.push({ name: asset.name, balanceBaseUnits: total.toString(), units: asset.units });
+      let balance: bigint;
+      if (address !== undefined) {
+        balance = asset.balances.get(address) ?? 0n;
+      } else {
+        balance = 0n;
+        for (const bal of asset.balances.values()) balance += bal;
+      }
+      if (balance > 0n) {
+        assets.push({ name: asset.name, balanceBaseUnits: balance.toString(), units: asset.units });
       }
     }
     assets.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

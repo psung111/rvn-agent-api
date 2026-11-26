@@ -45,7 +45,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.41.0',
+    version: '0.42.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -145,9 +145,10 @@ export const openApiDocument = {
           'each asset. Only assets with a nonzero wallet balance are listed — an asset fully ' +
           'transferred out disappears from the list. All quantities are decimal strings in base ' +
           'units; polling writes nothing (no intents, no audit entries). A node that cannot answer ' +
-          'returns 502. With ?agentId= the RVN figure is that agent\'s own wallet balance ' +
-          '(v0.41.0, provisioning the address when the agent has none); the asset list stays ' +
-          'wallet-wide until per-address asset balances land.',
+          'returns 502. With ?agentId= both figures are that agent\'s own wallet balance ' +
+          '(v0.41.0 for RVN, v0.42.0 for assets — the asset list is what that address holds, ' +
+          'so an agent sees only what its own address can fund; provisioning the address ' +
+          'when the agent has none).',
         parameters: [
           {
             name: 'agentId',
@@ -175,7 +176,9 @@ export const openApiDocument = {
         description:
           'Read the agent\'s stable wallet address (v0.41.0), minted from the node on first call ' +
           'and tracked in the store afterwards — the same address on every call. Funding checks ' +
-          'and fee debiting use this address, so one agent cannot spend another\'s RVN. Under ' +
+          'and fee debiting use this address, so one agent cannot spend another\'s RVN, and ' +
+          'since v0.42.0 the funding check\'s asset leg and the mock\'s transfer debit read ' +
+          'this address too, so one agent cannot transfer another\'s assets. Under ' +
           'auth, a per-agent key may only read its own agent\'s address. A node or store failure ' +
           'returns 502.',
         parameters: [

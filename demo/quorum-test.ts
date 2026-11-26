@@ -341,14 +341,28 @@ async function main(): Promise<void> {
 
     // ---- 6. transfer quorum threshold: a would-ALLOW transfer holds ----
     const tAgent = 'quorum-transfer';
+    const tWallet = (await get('/v1/wallet/address/quorum-transfer')).json?.address as string;
+    check('transfer agent wallet address provisioned', typeof tWallet === 'string' && tWallet.length > 0, tWallet);
     const tPut = await put(`/v1/policies/${tAgent}`, basePolicy(tAgent, {
       quorumApprovals: 2,
       quorumAboveTransferQtyBaseUnits: '1000',
-      allowedDestinations: [wallet],
+      allowedDestinations: [wallet, tWallet],
     }));
     check('transfer-quorum policy stores', tPut.status === 200, tPut.json);
+    // Per-address asset balances (v0.42.0): the transferring agent must
+    // hold the coin at its own wallet address, so it issues TCOIN to
+    // itself first — the issue holds on the approval threshold and one
+    // approver executes it (no quorum threshold on issues for this agent).
+    const tIssue = await post('/v1/assets/issue', {
+      agentId: tAgent, name: 'TCOIN', qty: '60000', toAddress: tWallet,
+    });
+    check('transfer agent issues its own coin to its wallet address (holds on the approval threshold)',
+      tIssue.status === 202 && tIssue.json?.decision?.kind === 'REQUIRE_APPROVAL', tIssue.json);
+    const tIssueApprove = await post(`/v1/intents/${tIssue.json.intent.id}/approve`, { approver: 'alice' });
+    check('single approver executes the setup issue',
+      tIssueApprove.status === 200 && !!tIssueApprove.json?.txid, tIssueApprove.json);
     const transfer = await post('/v1/assets/transfer', {
-      agentId: tAgent, assetName: 'BIGCOIN', qty: '2000', destination: wallet,
+      agentId: tAgent, assetName: 'TCOIN', qty: '2000', destination: wallet,
     });
     check('transfer above the quorum threshold but below the approval threshold holds',
       transfer.status === 202 && transfer.json?.decision?.kind === 'REQUIRE_APPROVAL', transfer.json);
