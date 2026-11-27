@@ -387,8 +387,10 @@ const TOOLS: ToolDef[] = [
       'balance the wallet holds, so an operator or monitoring agent can see what the wallet can ' +
       'fund without simulating an intent for each asset. Only assets with a nonzero wallet balance ' +
       'are listed. All quantities are decimal strings in base units. With agentId, both figures ' +
-      'are that agent\'s own wallet balance (v0.41.0 for RVN, v0.42.0 for assets — the asset list ' +
-      'is what that address holds). Read-only — polling it writes ' +
+      'are that agent\'s own ravend wallet (v0.43.0 — the agent\'s wallet, provisioned when it ' +
+      'has none — and its wallet address inside it, v0.41.0 for RVN, v0.42.0 for assets). ' +
+      'Without it the read is the default (operator) wallet, which no longer includes any ' +
+      'agent\'s activity. Read-only — polling it writes ' +
       'nothing, so it cannot change what the next submit sees.',
     inputSchema: {
       type: 'object',
@@ -404,7 +406,9 @@ const TOOLS: ToolDef[] = [
       'from the node on first call and tracked in the store afterwards — the same address on ' +
       'every call. Funding checks and fee debiting use this address, so one agent cannot spend ' +
       'another\'s RVN, and since v0.42.0 the funding check\'s asset leg and the mock\'s transfer ' +
-      'debit read this address too, so one agent cannot transfer another\'s assets. Read-only in the funds sense: provisioning the address moves no funds.',
+      'debit read this address too, so one agent cannot transfer another\'s assets. Since ' +
+      'v0.43.0 the address is minted inside the agent\'s own ravend wallet, so submits, ' +
+      'funding checks and execution all run inside that wallet. Read-only in the funds sense: provisioning the address moves no funds.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -771,7 +775,7 @@ function handle(req: JsonRpcRequest): void {
       return ok({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'rvn-agent-api', version: '0.42.0' },
+        serverInfo: { name: 'rvn-agent-api', version: '0.43.0' },
       });
     }
     case 'notifications/initialized':

@@ -1073,7 +1073,7 @@ and logs the result in CHANGELOG.md.
   demo`, `pnpm mcp-smoke`, and every `test:*` suite still green. The
   mainnet guardrail item is complete; the next top item is per-agent
   wallets.
-- [ ] **Per-agent wallets** — the API has one node wallet shared by
+- [x] **Per-agent wallets** — the API has one node wallet shared by
   every agent, so one agent's issue fee or transfer drains the same
   balance every other agent simulates against. Give each agent its own
   wallet address (derived from the node, tracked per agentId), so
@@ -1171,6 +1171,52 @@ and logs the result in CHANGELOG.md.
     burst flag. `pnpm demo`, `pnpm mcp-smoke`, and every `test:*`
     suite still green. Remainder: per-agent ravend wallets on a real
     node.
+  - [x] 2026-11-27 — v0.43.0 per-agent ravend wallets on a real node
+    (slice 3, item complete): the funding check is no longer the only
+    enforcement point on a real node — each agent's submits now execute
+    inside its own ravend wallet. New multi-wallet seam on `RvnNode`:
+    `createWallet` / `loadWallet` / `listWallets` / `withWallet` (plus
+    a `walletName` on scoped views). The real client routes wallet RPCs
+    to the `/wallet/<name>` endpoint (name percent-encoded) and keeps
+    node-level RPCs (chain info, fee estimate) and the chain-global
+    asset registry (`listassets`, `getassetdata`) on the base URL, as
+    well as the management RPCs themselves. The mock simulates it with
+    one isolated ledger per wallet — per-wallet RVN and asset holdings,
+    each wallet's operator address seeded on creation like the default
+    wallet's — while the asset registry stays chain-global, so
+    `listAssets` sees an asset from any wallet and the same name cannot
+    be issued twice anywhere, exactly as on a real node. New
+    `src/rvn/wallets.ts` helpers: `agentWalletName` (sanitized
+    `rvn-agent-api-<agentId>`; the name IS the mapping, so no store seam
+    was needed) and `getOrCreateAgentWallet` (list -> load an
+    existing-but-unloaded wallet, e.g. after a node restart -> create,
+    with a create-race re-check) plus read-only `getAgentWallet`
+    (simulate never provisions). The server resolves the agent's wallet
+    once per submit/approval and runs the funding check and execution
+    through it, minting the agent's address inside that wallet; the
+    balances and address routes do the same, and simulate uses the
+    read-only resolution. The default wallet is now the operator wallet
+    only: a wallet-wide read shows its 1,000,000 RVN seed and none of
+    any agent's assets. A wallet-layer failure degrades to the base
+    node (the old shared-wallet behavior) instead of failing a
+    decision. `/v1/health` reports `wallets.perAgent`. No new route or
+    tool: the MCP / LangChain wallet descriptions now name the ravend
+    wallet. Verified with new `pnpm test:agent-wallets`
+    (`demo/per-agent-ravend-wallet-test.ts`, 71 checks: name
+    sanitization and provisioning units incl. the load path, the create
+    race, and the no-seam throw; mock multi-wallet units incl.
+    cross-wallet invisibility, the global registry, and a 600 RVN drain
+    that cannot touch the other wallet; stubbed-fetch routing units
+    incl. the URL-encoded wallet path and the base-URL exceptions; and
+    booted-API integrations — wallet isolation at the API level, the
+    funding-gate refusal for a second agent at submit and approval
+    time, simulate agreement with zero side effects, and the 600 RVN
+    funding-isolation proof). The wallet, per-agent-wallet, and
+    per-address-asset suites' wallet-wide expectations were updated for
+    the operator-wallet semantics; `pnpm demo`, `pnpm mcp-smoke`, and
+    every `test:*` suite still green. The per-agent wallets item is
+    complete; the next top item is the first of the five newly appended
+    backlog items below.
 
 ## Done
 

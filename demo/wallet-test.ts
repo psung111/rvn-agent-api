@@ -221,11 +221,12 @@ async function main() {
     // Snapshot the audit AFTER the issues: balance reads must add nothing.
     const auditBefore = await get(API1, '/v1/audit?limit=100');
     const auditLenBefore = (auditBefore.json?.entries ?? []).length;
-    // Per-agent wallets (v0.41.0): the issues were submitted as agent-1,
-    // so the fees came out of agent-1's own wallet address — the
-    // agent-scoped read is the meaningful one now. The wallet-wide total
-    // is the sum of the operator seed (1,000,000 RVN) and agent-1's
-    // balance, since provisioning agent-1's address seeded it.
+    // Per-agent wallets (v0.41.0; ravend wallets since v0.43.0): the
+    // issues were submitted as agent-1, so they executed inside
+    // agent-1's own ravend wallet — the agent-scoped read is the
+    // meaningful one now. The wallet-wide read is the default
+    // (operator) wallet, which the agent's activity never touches: it
+    // stays at its 1,000,000 RVN seed with no assets.
     const agentBalances = await get(API1, '/v1/wallet/balances?agentId=agent-1');
     check('API per-agent balances after issues: fee + miner fee debited from agent-1, assets sorted with balances',
       agentBalances.status === 200 &&
@@ -238,9 +239,10 @@ async function main() {
       agentBalances.json.assets[1]?.balanceBaseUnits === '7',
       agentBalances);
     const apiBalances = await get(API1, '/v1/wallet/balances');
-    check('API wallet-wide total is the operator seed plus agent-1 (2,000,000 RVN - fees)',
+    check('API wallet-wide read is the operator wallet only: 1,000,000 RVN seed, no agent assets',
       apiBalances.status === 200 &&
-      apiBalances.json?.rvnBaseUnits === ((1_999_000n * RVN_BASE_UNITS_PER_COIN) - 10_000n).toString(),
+      apiBalances.json?.rvnBaseUnits === (1_000_000n * RVN_BASE_UNITS_PER_COIN).toString() &&
+      Array.isArray(apiBalances.json?.assets) && apiBalances.json.assets.length === 0,
       apiBalances);
     const auditAfter = await get(API1, '/v1/audit?limit=100');
     const pending = await get(API1, '/v1/intents/pending');

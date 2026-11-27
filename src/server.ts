@@ -70,7 +70,7 @@ import { TelegramApi } from './approvals/telegram-api.js';
 import { MockRvnNode } from './rvn/mock.js';
 import { RvnRpcClient } from './rvn/client.js';
 import { checkChainGuardrail, mainnetAllowedFromEnv, MainnetGuardrailError } from './rvn/guardrail.js';
-import { getOrCreateWalletAddress, getWalletAddress } from './rvn/wallets.js';
+import { getAgentWallet, getOrCreateAgentWallet, getOrCreateWalletAddress, getWalletAddress } from './rvn/wallets.js';
 import type { RvnNode } from './rvn/types.js';
 
 const MOCK = process.env.MOCK_RVN !== 'false';
@@ -428,8 +428,13 @@ async function main() {
    * path and the approval path, so extra params (units, ipfs hashes,
    * reissuable flags) captured in intent.execParams at submit time are
    * replayed faithfully after a hold instead of being dropped.
-   * `fromAddress` (v0.41.0) is the submitting agent's wallet address:
-   * the mock debits the issuance/miner fee from it, so one agent cannot
+   * `walletNode` (v0.43.0) is the submitting agent's own ravend wallet:
+   * on a real node the issue/transfer RPCs run inside that wallet, so
+   * fees come out of it and assets move within it — true per-agent
+   * isolation instead of the funding check alone. The mock's scoped
+   * wallet debits the same way. `fromAddress` (v0.41.0) is the
+   * submitting agent's wallet address, minted inside that wallet: the
+   * mock debits the issuance/miner fee from it, so one agent cannot
    * spend another's RVN; the real client ignores it (ravend pays fees
    * from the wallet pool — the funding check is the enforcement point
    * there). Since v0.42.0 the mock also debits a transfer's asset qty
@@ -439,10 +444,10 @@ async function main() {
    * the mock debits its operator address (fees) and from wherever the
    * asset balance lives (transfers).
    */
-  const executeIntent = async (intent: RvnIntent, fromAddress?: string): Promise<string> => {
+  const executeIntent = async (walletNode: RvnNode, intent: RvnIntent, fromAddress?: string): Promise<string> => {
     const p = intent.execParams ?? {};
     if (intent.kind === 'issue_asset') {
-      return node.issueAsset({
+      return walletNode.issueAsset({
         name: intent.assetName,
         qty: intent.qtyBaseUnits,
         toAddress: intent.destination,
@@ -453,7 +458,7 @@ async function main() {
       });
     }
     if (intent.kind === 'reissue_asset') {
-      return node.reissueAsset({
+      return walletNode.reissueAsset({
         name: intent.assetName,
         qty: intent.qtyBaseUnits,
         toAddress: intent.destination,
@@ -464,7 +469,7 @@ async function main() {
       });
     }
     if (intent.kind === 'issue_subasset') {
-      return node.issueSubAsset({
+      return walletNode.issueSubAsset({
         name: intent.assetName,
         qty: intent.qtyBaseUnits,
         toAddress: intent.destination,
@@ -477,28 +482,48 @@ async function main() {
     if (intent.kind === 'issue_unique') {
       // Unique assets are singletons: qty is always '1' (enforced at the
       // route), units 0, never reissuable — the node takes no qty at all.
-      return node.issueUniqueAsset({
+      return walletNode.issueUniqueAsset({
         name: intent.assetName,
         toAddress: intent.destination,
         ipfsHash: p.ipfsHash,
         fromAddress,
       });
     }
-    return node.transferAsset(intent.assetName, intent.qtyBaseUnits, intent.destination, fromAddress);
+    return walletNode.transferAsset(intent.assetName, intent.qtyBaseUnits, intent.destination, fromAddress);
+  };
+
+  /**
+   * The submitting agent's ravend wallet (v0.43.0), provisioning it
+   * when the agent has none. A failure to provision (node down, node
+   * without multi-wallet support) degrades to the base node instead of
+   * failing the submit: the funding check then reads the wallet-wide
+   * balance and execution runs in the shared wallet, exactly as before
+   * per-agent wallets — a wallet-layer failure never blocks a decision
+   * the policy engine already made.
+   */
+  const walletNodeFor = async (agentId: string): Promise<RvnNode> => {
+    try {
+      return await getOrCreateAgentWallet(node, agentId);
+    } catch (err) {
+      app.log.warn({ err, agentId }, 'per-agent ravend wallet unavailable — funding check and execution fall back to the shared wallet');
+      return node;
+    }
   };
 
   /**
    * The submitting agent's wallet address (v0.41.0), provisioning it
-   * when the agent has none. A failure to mint or record the address
-   * (node down, store error) degrades to undefined instead of failing
-   * the submit: the funding check then reads the wallet-wide balance
-   * and execution debits the mock's operator address, exactly as
-   * before per-agent wallets — a wallet-layer failure never blocks a
-   * decision the policy engine already made.
+   * when the agent has none — minted inside the agent's ravend wallet
+   * (v0.43.0), so the address belongs to the wallet the funding check
+   * and execution use. A failure to mint or record the address (node
+   * down, store error) degrades to undefined instead of failing the
+   * submit: the funding check then reads the wallet-wide balance and
+   * execution debits the mock's operator address, exactly as before
+   * per-agent wallets — a wallet-layer failure never blocks a decision
+   * the policy engine already made.
    */
-  const walletAddressFor = async (agentId: string): Promise<string | undefined> => {
+  const walletAddressFor = async (agentId: string, walletNode: RvnNode): Promise<string | undefined> => {
     try {
-      return await getOrCreateWalletAddress(store, node, agentId);
+      return await getOrCreateWalletAddress(store, walletNode, agentId);
     } catch (err) {
       app.log.warn({ err, agentId }, 'per-agent wallet address unavailable — funding check falls back to the wallet-wide balance');
       return undefined;
@@ -639,9 +664,12 @@ async function main() {
     // with atApproval: true, so the hold ends as a clean refusal instead
     // of a 502 + EXECUTION_FAILED. A node that cannot answer (funded:
     // null) leaves the approval untouched and execution is attempted.
-    // The check reads the approving agent's own wallet address (v0.41.0).
-    const walletAddress = await walletAddressFor(intent.agentId);
-    const funding = await checkFunding(intent, node, walletAddress);
+    // The check reads the approving agent's own wallet (v0.43.0: the
+    // agent's ravend wallet, provisioned when it has none) and its
+    // wallet address inside it (v0.41.0).
+    const walletNode = await walletNodeFor(intent.agentId);
+    const walletAddress = await walletAddressFor(intent.agentId, walletNode);
+    const funding = await checkFunding(intent, walletNode, walletAddress);
     if (funding.funded === false) {
       const denied = applyFunding(fresh, funding);
       await store.audit.append('DECISION', intent.id, intent.agentId, {
@@ -655,7 +683,7 @@ async function main() {
       };
     }
     try {
-      const txid = await executeIntent(intent, walletAddress);
+      const txid = await executeIntent(walletNode, intent, walletAddress);
       if (createsSupply(intent.kind)) {
         await store.ledger.recordIssue(intent.agentId, BigInt(intent.qtyBaseUnits), Date.now());
       }
@@ -694,7 +722,7 @@ async function main() {
 
   const submit = async (
     intent: RvnIntent,
-    execute: (fromAddress?: string) => Promise<string>,
+    execute: (walletNode: RvnNode, fromAddress?: string) => Promise<string>,
     reply: any,
   ) => {
     const policy = await policyFor(intent.agentId);
@@ -742,14 +770,17 @@ async function main() {
     // execution itself is the fallback verdict, as before. The gate runs
     // before the decision is stored and audited, so the audit trail
     // carries one DECISION entry with the final verdict. The check reads
-    // the submitting agent's own wallet address (v0.41.0), resolved once
-    // here and reused for execution so the fee is debited from the same
-    // balance the check saw.
+    // the submitting agent's own ravend wallet (v0.43.0, provisioned
+    // when the agent has none) and its wallet address inside it
+    // (v0.41.0), resolved once here and reused for execution so the fee
+    // is debited from the same balance the check saw.
     let funding: FundingCheck | undefined;
     let walletAddress: string | undefined;
+    let walletNode: RvnNode = node;
     if (decision.kind === 'ALLOW') {
-      walletAddress = await walletAddressFor(intent.agentId);
-      funding = await checkFunding(intent, node, walletAddress);
+      walletNode = await walletNodeFor(intent.agentId);
+      walletAddress = await walletAddressFor(intent.agentId, walletNode);
+      funding = await checkFunding(intent, walletNode, walletAddress);
       decision = applyFunding(decision, funding);
     }
     await store.intents.putIntent(intent);
@@ -763,7 +794,7 @@ async function main() {
 
     if (decision.kind === 'ALLOW') {
       try {
-        const txid = await execute(walletAddress);
+        const txid = await execute(walletNode, walletAddress);
         if (createsSupply(intent.kind)) {
           await store.ledger.recordIssue(intent.agentId, BigInt(intent.qtyBaseUnits), Date.now());
         }
@@ -849,6 +880,13 @@ async function main() {
       policyHistory: {
         limit: policyHistoryLimit,
       },
+      // Per-agent ravend wallets (v0.43.0): every agent's submits,
+      // funding checks and balances run inside its own wallet
+      // (`rvn-agent-api-<agentId>`) on the node, provisioned on first
+      // use; the default wallet is the operator wallet only.
+      wallets: {
+        perAgent: true,
+      },
       webhooks: {
         configured: webhookDispatcher.enabled,
         endpoints: webhookDispatcher.endpointCount,
@@ -910,10 +948,12 @@ async function main() {
    * 502, like any other node failure (the funding check's funded:null
    * degradation does not apply here — there is no decision to keep, only
    * the balances). With `?agentId=` both figures are that agent's own
-   * wallet address (provisioning the address when the agent has none —
-   * the address route does the same explicitly), so an agent sees only
-   * the assets its own address holds (v0.42.0). Under auth, a
-   * per-agent key may only read its own agent's balances.
+   * ravend wallet (v0.43.0: the agent's wallet, provisioned when it has
+   * none, and its wallet address inside it), so an agent sees only the
+   * assets its own wallet holds (v0.42.0). Without it the read is the
+   * default wallet — the operator wallet — which no longer includes any
+   * agent's activity. Under auth, a per-agent key may only read its own
+   * agent's balances.
    */
   app.get('/v1/wallet/balances', async (req, reply) => {
     const q = (req.query ?? {}) as Record<string, unknown>;
@@ -923,8 +963,10 @@ async function main() {
       if (forbidden) return reply.code(403).send({ error: forbidden });
     }
     try {
-      const address = agentId === undefined ? undefined : await getOrCreateWalletAddress(store, node, agentId);
-      return await node.listWalletBalances(address);
+      if (agentId === undefined) return await node.listWalletBalances();
+      const walletNode = await walletNodeFor(agentId);
+      const address = await getOrCreateWalletAddress(store, walletNode, agentId);
+      return await walletNode.listWalletBalances(address);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return reply.code(502).send({ error: `node balance read failed: ${message}` });
@@ -936,16 +978,20 @@ async function main() {
    * address, minted from the node on first call and tracked in the
    * store afterwards — the same address on every call. Funding checks
    * and fee debiting use this address, so one agent cannot spend
-   * another's RVN. Under auth, a per-agent key may only read its own
-   * agent's address. A node or store failure is a 502: an address the
-   * API cannot trust is worse than an error.
+   * another's RVN. Since v0.43.0 the address is minted inside the
+   * agent's own ravend wallet (provisioned when it has none), so it
+   * belongs to the wallet the funding check and execution use. Under
+   * auth, a per-agent key may only read its own agent's address. A
+   * node or store failure is a 502: an address the API cannot trust is
+   * worse than an error.
    */
   app.get('/v1/wallet/address/:agentId', async (req, reply) => {
     const agentId = (req.params as { agentId: string }).agentId;
     const forbidden = await checkAgentParam(req, agentId);
     if (forbidden) return reply.code(403).send({ error: forbidden });
     try {
-      const address = await getOrCreateWalletAddress(store, node, agentId);
+      const walletNode = await walletNodeFor(agentId);
+      const address = await getOrCreateWalletAddress(store, walletNode, agentId);
       return { agentId, address };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -980,7 +1026,7 @@ async function main() {
         ipfsHash: b.ipfsHash,
       },
     };
-    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
+    return submit(intent, (walletNode, fromAddress) => executeIntent(walletNode, intent, fromAddress), reply);
   });
 
   /**
@@ -1030,7 +1076,7 @@ async function main() {
       requestedAtMs: Date.now(),
       execParams: { reissuable, newUnits, newIpfsHash },
     };
-    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
+    return submit(intent, (walletNode, fromAddress) => executeIntent(walletNode, intent, fromAddress), reply);
   });
 
   /**
@@ -1073,7 +1119,7 @@ async function main() {
         ipfsHash: typeof b.ipfsHash === 'string' ? b.ipfsHash : undefined,
       },
     };
-    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
+    return submit(intent, (walletNode, fromAddress) => executeIntent(walletNode, intent, fromAddress), reply);
   });
 
   /**
@@ -1119,7 +1165,7 @@ async function main() {
         ipfsHash: typeof b.ipfsHash === 'string' ? b.ipfsHash : undefined,
       },
     };
-    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
+    return submit(intent, (walletNode, fromAddress) => executeIntent(walletNode, intent, fromAddress), reply);
   });
 
   app.post('/v1/assets/transfer', async (req, reply) => {
@@ -1138,7 +1184,7 @@ async function main() {
       destination: String(b.destination),
       requestedAtMs: Date.now(),
     };
-    return submit(intent, (fromAddress) => executeIntent(intent, fromAddress), reply);
+    return submit(intent, (walletNode, fromAddress) => executeIntent(walletNode, intent, fromAddress), reply);
   });
 
   app.get('/v1/assets', async (req) => {
@@ -1276,8 +1322,9 @@ async function main() {
     // the funding verdict never masks a policy DENY or hold, and only
     // with read-only balance lookups (no state moves anywhere). The
     // check reads the agent's wallet address when one is already
-    // tracked (v0.41.0); it never provisions one — a simulation must
-    // not create persistent state — so an agent with no address yet is
+    // tracked (v0.41.0) and its ravend wallet when one is already
+    // loaded (v0.43.0); it never provisions either — a simulation must
+    // not create persistent state — so an agent with no wallet yet is
     // checked against the wallet-wide balance. Provision the address
     // first (GET /v1/wallet/address/:agentId) for an exact prediction.
     let walletAddress: string | undefined;
@@ -1286,7 +1333,8 @@ async function main() {
     } catch (err) {
       app.log.warn({ err, agentId: intent.agentId }, 'per-agent wallet address read failed — simulate falls back to the wallet-wide balance');
     }
-    const funding = await checkFunding(intent, node, walletAddress);
+    const walletNode = await getAgentWallet(node, intent.agentId);
+    const funding = await checkFunding(intent, walletNode, walletAddress);
     return {
       simulated: true,
       decision: applyFunding(decision, funding),

@@ -390,9 +390,11 @@ class RvnApiClient:
         asset balance it holds (nonzero only), so an agent can see what
         the wallet can fund without simulating an intent for each asset.
         All quantities are decimal strings in base units. With agent_id
-        both figures are that agent's own wallet balance (v0.41.0 for
-        RVN, v0.42.0 for assets — the asset list is what that address
-        holds)."""
+        both figures are that agent's own ravend wallet (v0.43.0 — the
+        agent's wallet, provisioned when it has none — and its wallet
+        address inside it, v0.41.0 for RVN, v0.42.0 for assets). Without
+        it the read is the default (operator) wallet, which no longer
+        includes any agent's activity."""
         query = {"agentId": agent_id} if agent_id else None
         return self._call("GET", "/v1/wallet/balances", query=query)
 
@@ -402,7 +404,10 @@ class RvnApiClient:
         on every call. Funding checks and fee debiting use this address,
         so one agent cannot spend another's RVN, and since v0.42.0 the
         funding check's asset leg and the mock's transfer debit read
-        this address too, so one agent cannot transfer another's assets."""
+        this address too, so one agent cannot transfer another's assets.
+        Since v0.43.0 the address is minted inside the agent's own
+        ravend wallet, so submits, funding checks and execution all run
+        inside that wallet."""
         agent = agent_id or self.agent_id
         return self._call("GET", f"/v1/wallet/address/{urllib.parse.quote(agent)}")
 

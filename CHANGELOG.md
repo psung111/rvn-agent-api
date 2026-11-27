@@ -1,5 +1,97 @@
 # Changelog
 
+## 2026-11-27 — v0.43.0 (Per-agent ravend wallets on a real node, slice 3 — item complete)
+
+- Per-agent ravend wallets on a real node: the funding check is no
+  longer the only enforcement point on a real node — each agent's
+  submits now execute inside its own ravend wallet. New multi-wallet
+  seam on `RvnNode` — `createWallet` / `loadWallet` / `listWallets` /
+  `withWallet` (plus a `walletName` on scoped views). The real client
+  routes wallet RPCs to the `/wallet/<name>` endpoint (the name
+  percent-encoded, so spaces and other specials still route) and keeps
+  node-level RPCs (chain info, fee estimate) and the chain-global
+  asset registry (`listassets`, `getassetdata`) on the base URL, as
+  well as the management RPCs themselves (`createwallet` /
+  `loadwallet` / `listwallets`). The mock simulates it with one
+  isolated ledger per wallet — per-wallet RVN and asset holdings, each
+  wallet's operator address seeded on creation like the default
+  wallet's — while the asset registry stays chain-global, so
+  `listAssets` sees an asset from any wallet and the same name cannot
+  be issued twice anywhere, exactly as on a real node. A view of a
+  wallet that was never created throws on use, like a real node's
+  `/wallet/<name>` endpoint for an unloaded wallet.
+- New `src/rvn/wallets.ts` helpers: `agentWalletName` (sanitized
+  `rvn-agent-api-<agentId>`; the name IS the mapping, so no store seam
+  was needed and no migration was required) and
+  `getOrCreateAgentWallet` (list -> load an existing-but-unloaded
+  wallet, e.g. after a node restart -> create, with a create-race
+  re-check so a concurrent provision still succeeds) plus read-only
+  `getAgentWallet` (simulate never provisions). The server resolves
+  the agent's wallet once per submit/approval and runs the funding
+  check and execution through it, minting the agent's address inside
+  that wallet; the balances and address routes do the same, and
+  simulate uses the read-only resolution. The default wallet is now
+  the operator wallet only: a wallet-wide read shows its 1,000,000 RVN
+  seed and none of any agent's assets. A wallet-layer failure degrades
+  to the base node (the old shared-wallet behavior) instead of failing
+  a decision the policy engine already made. `/v1/health` reports
+  `wallets.perAgent`.
+- Adapters keep the "cover every route" invariant with no new tool: the
+  MCP / LangChain `get_wallet_balances` / `get_wallet_address`
+  descriptions now name the ravend wallet, and the OpenAPI spec's
+  balances and address descriptions do too (plus the new `wallets`
+  field on the Health schema; the drift test covers it).
+  `initialize` now reports server version 0.43.0 (`src/mcp.ts`,
+  `package.json`, `langchain_rvn/pyproject.toml`); README "Per-agent
+  wallets" section rewritten around the ravend wallet.
+- New `pnpm test:agent-wallets`
+  (`demo/per-agent-ravend-wallet-test.ts`, 71 checks): name
+  sanitization and provisioning units incl. the load path, the create
+  race, and the no-seam throw; mock multi-wallet units incl.
+  cross-wallet invisibility, the global registry, and a 600 RVN drain
+  that cannot touch the other wallet; stubbed-fetch routing units
+  incl. the URL-encoded wallet path and the base-URL exceptions; and
+  booted-API integrations — wallet isolation at the API level, the
+  funding-gate refusal for a second agent at submit and approval time,
+  simulate agreement with zero side effects, and the 600 RVN
+  funding-isolation proof. The wallet, per-agent-wallet, and
+  per-address-asset suites' wallet-wide expectations were updated for
+  the operator-wallet semantics. `pnpm demo`, `pnpm mcp-smoke`,
+  `pnpm test:approvals`, `pnpm test:telegram-callback`,
+  `pnpm test:simulate`, `pnpm test:reissue`, `pnpm test:subasset`,
+  `pnpm test:unique`, `pnpm test:presets`, `pnpm test:anomaly`,
+  `pnpm test:store`, `pnpm test:archive`, `pnpm test:migrations`,
+  `pnpm test:partition`, `pnpm test:webhooks`,
+  `pnpm test:ratelimit`, `pnpm test:metrics`,
+  `pnpm test:quorum`, `pnpm test:auth`, `pnpm test:mcp-auth`,
+  `pnpm test:openapi`, `pnpm test:docs`,
+  `pnpm test:hold-aging`, `pnpm test:policy-history`,
+  `pnpm test:funding`, `pnpm test:funding-gate`,
+  `pnpm test:miner-fee`, `pnpm test:wallet`,
+  `pnpm test:guardrail`, `pnpm test:wallets`,
+  `pnpm test:per-address-assets`, `pnpm test:agent-wallets`,
+  `pnpm test:langchain` still green.
+- Environment note: no `pnpm` binary on this VM — verification ran the
+  direct equivalents (`node_modules/.bin/tsc`,
+  `node_modules/.bin/tsx`, plus a fresh venv Python with
+  langchain-core for the adapter test); `package.json` scripts are
+  unchanged in content apart from the new `test:agent-wallets`
+  script. No local Postgres on this VM, so the Postgres live legs were
+  skipped (as in recent sessions); the slice needs no migration. The
+  real-node `createwallet` / `loadwallet` / `listwallets` / `/wallet/`
+  routing is implemented against the documented RPC shapes and is NOT
+  verified against a live ravend (no live node here) — the mock leg
+  and the stubbed-fetch units are what the suite exercises. One
+  harness note: the sweep loop used six wrong filenames
+  (`presets`/`migrations`/`webhooks`/`wallets`/`per-address-assets`/
+  `agent-wallets` for `preset`/`migration`/`webhook`/
+  `per-agent-wallet`/`per-address-asset`/`per-agent-ravend-wallet`)
+  plus `approvals` for `approval-notify` — those suites failed the
+  harness, not the product, and all passed on re-run with the correct
+  names.
+- The per-agent wallets item is complete; the next top item is the
+  first of the five newly appended backlog items (see ROADMAP.md).
+
 ## 2026-11-26 — v0.42.0 (Per-address asset balances, slice 2 — item partial)
 
 - Per-address asset balances: the funding check's asset leg and the

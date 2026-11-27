@@ -43,11 +43,30 @@ export function decimalToBaseUnits(value: number | string, decimals: number): st
  * `help <command>` if anything misbehaves across versions.
  */
 export class RvnRpcClient implements RvnNode {
-  constructor(private config: RpcConfig) {}
+  /**
+   * `walletName` (v0.43.0) scopes this client to one ravend wallet:
+   * wallet RPCs go to the `/wallet/<name>` endpoint, so the wallet's own
+   * UTXOs and assets fund and receive the calls. Undefined is the
+   * default wallet (the bare RPC URL). Node-level RPCs (chain info, fee
+   * estimate) and the chain-global asset registry always use the base
+   * URL, as do the wallet-management RPCs — ravend answers those only
+   * without a wallet context.
+   */
+  constructor(
+    private config: RpcConfig,
+    readonly walletName?: string,
+  ) {}
 
-  private async call<T>(method: string, params: unknown[] = []): Promise<T> {
+  private async call<T>(method: string, params: unknown[] = [], opts: { base?: boolean } = {}): Promise<T> {
     const auth = Buffer.from(`${this.config.user}:${this.config.pass}`).toString('base64');
-    const res = await fetch(this.config.url, {
+    // A wallet-scoped call goes to /wallet/<name>; the wallet name is
+    // percent-encoded, so names with spaces or other specials still
+    // route (ravend decodes the path segment).
+    const url =
+      !opts.base && this.walletName !== undefined
+        ? `${this.config.url}/wallet/${encodeURIComponent(this.walletName)}`
+        : this.config.url;
+    const res = await fetch(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -61,9 +80,40 @@ export class RvnRpcClient implements RvnNode {
     return json.result as T;
   }
 
+  /**
+   * Create a ravend wallet and load it (`createwallet`), so the API can
+   * provision one wallet per agent on a real node. Called on the base
+   * URL — wallet management is not itself wallet-scoped. Throws when a
+   * wallet of that name already exists (the provisioning helper treats
+   * that as "already provisioned"). NOTE: implemented against the
+   * documented RPC shape and not verified against a live ravend on this
+   * VM (no live node here) — the mock leg and the stubbed-fetch units
+   * in `pnpm test:agent-wallets` are what the suite exercises.
+   */
+  async createWallet(name: string): Promise<void> {
+    await this.call<{ name: string; warning?: string }>('createwallet', [name], { base: true });
+  }
+
+  /** Load a wallet file that exists but is not loaded (`loadwallet`). */
+  async loadWallet(name: string): Promise<void> {
+    await this.call<{ name: string; warning?: string }>('loadwallet', [name], { base: true });
+  }
+
+  /** Names of the wallets currently loaded on the node (`listwallets`). */
+  async listWallets(): Promise<string[]> {
+    return this.call<string[]>('listwallets', [], { base: true });
+  }
+
+  /** A view of this client scoped to one wallet (see the constructor). */
+  withWallet(name: string): RvnNode {
+    return new RvnRpcClient(this.config, name);
+  }
+
   async getInfo(): Promise<ChainInfo> {
     const r = await this.call<{ chain: string; blocks: number; connections: number }>(
       'getblockchaininfo',
+      [],
+      { base: true },
     );
     return { chain: r.chain, blocks: r.blocks, connections: r.connections };
   }
@@ -156,10 +206,13 @@ export class RvnRpcClient implements RvnNode {
   }
 
   async listAssets(pattern = '*'): Promise<AssetInfo[]> {
-    // listassets "( asset_name )" verbose — verbose=true returns per-asset objects
+    // listassets "( asset_name )" verbose — verbose=true returns per-asset objects.
+    // The asset registry is chain-global, so this always uses the base
+    // URL even on a wallet-scoped client (v0.43.0).
     const raw = await this.call<Record<string, { amount: number; units: number; reissuable: number; ipfs_hash?: string }>>(
       'listassets',
       [pattern, true],
+      { base: true },
     );
     return Object.entries(raw ?? {}).map(([name, a]) => ({
       name,
@@ -178,7 +231,7 @@ export class RvnRpcClient implements RvnNode {
         units: number;
         reissuable: number;
         ipfs_hash?: string;
-      }>('getassetdata', [name]);
+      }>('getassetdata', [name], { base: true });
       if (!a) return null;
       return {
         name: a.name,
@@ -280,6 +333,7 @@ export class RvnRpcClient implements RvnNode {
       const r = await this.call<{ feerate?: number; blocks?: number; errors?: string[] }>(
         'estimatesmartfee',
         [6],
+        { base: true },
       );
       if (!r || (Array.isArray(r.errors) && r.errors.length > 0)) return null;
       if (typeof r.feerate !== 'number' || !(r.feerate > 0)) return null;

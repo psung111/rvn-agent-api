@@ -157,33 +157,38 @@ and the LangChain client (`get_wallet_balances()`) expose the same read.
 
 ## Per-agent wallets
 
-Every agent has its own wallet address, minted from the node on first
-use and tracked in the store (`agent_wallets` table on Postgres):
+Every agent has its own ravend wallet, `rvn-agent-api-<agentId>`,
+provisioned from the node on first use (listed, loaded when it exists
+but is not loaded — e.g. after a node restart — or created), plus its
+own wallet address inside that wallet, minted on first use and tracked
+in the store (`agent_wallets` table on Postgres):
 `GET /v1/wallet/address/:agentId` returns it — the same address on
 every call, labelled `rvn-agent-api:<agentId>` in the wallet. Funding
-checks and fee debiting use that address, so one agent's issue fee
-cannot drain the balance another agent simulates against: on a 600 RVN
-mock, agent-1 issuing once and then DENYing its second issue does not
-stop agent-2 issuing from its own 600 RVN. Since v0.42.0 the asset
-side is per-address too: the funding check's asset leg reads the
-agent's own address, and the mock debits a transfer's asset qty from
-that address — so one agent cannot transfer another agent's assets
-(agent-2 transferring agent-1's coin is refused with
+checks and execution run inside the agent's wallet, so one agent's
+issue fee cannot drain the balance another agent simulates against:
+on a 600 RVN mock, agent-1 issuing once and then DENYing its second
+issue does not stop agent-2 issuing from its own 600 RVN. Since
+v0.42.0 the asset side is per-address too: the funding check's asset
+leg reads the agent's own address, and the mock debits a transfer's
+asset qty from that address — so one agent cannot transfer another
+agent's assets (agent-2 transferring agent-1's coin is refused with
 `INSUFFICIENT_ASSET_BALANCE`, at submit time and at approval time).
-`GET /v1/wallet/balances?agentId=` reads one agent's RVN balance plus
-only the assets that address holds. Simulate never provisions an
-address — an agent with none yet is checked against the wallet-wide
-balance, so provision the address first for an exact prediction. On the
-mock each agent address is seeded with `MOCK_RVN_BALANCE_BASE_UNITS`
-on mint, like a faucet; on a real node the address holds whatever the
-operator funded it with, and the funding check reads it via
-`listunspent` (RVN) and `listassetbalancesbyaddress` (assets) — the
-fee itself still comes from the wallet UTXO pool at execution, and
-`transfer` still moves wallet-owned assets regardless of address, so
-the check is the enforcement point there. True wallet separation on a
-real node (a ravend wallet per agent) is a follow-up. The MCP server
-(`get_wallet_address`) and the LangChain client (`get_wallet_address()`)
-expose the same read.
+`GET /v1/wallet/balances?agentId=` reads one agent's wallet: its RVN
+balance plus only the assets that wallet holds. Without `?agentId=` the
+read is the default (operator) wallet, which no longer includes any
+agent's activity. Simulate never provisions a wallet or an address —
+an agent with none yet is checked against the wallet-wide balance, so
+provision the address first for an exact prediction. On the mock each
+agent wallet's operator address and each agent address are seeded with
+`MOCK_RVN_BALANCE_BASE_UNITS` on creation/mint, like a faucet; on a
+real node the wallet holds whatever the operator funded it with — the
+wallet RPCs run at the `/wallet/<name>` endpoint, so the issuance and
+miner fees come out of that wallet's UTXOs and `transfer` moves that
+wallet's assets (the funding check reads them via `listunspent` and
+`listassetbalancesbyaddress`). The asset registry itself is
+chain-global: `GET /v1/assets` lists every asset from any wallet. The
+MCP server (`get_wallet_address`) and the LangChain client
+(`get_wallet_address()`) expose the same read.
 
 ## API-key authentication
 

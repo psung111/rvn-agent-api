@@ -17,7 +17,8 @@
  *   - an agent issues to its own wallet address, then transfers part of
  *     it onward: the transfer ALLOWs and executes, and the agent-scoped
  *     balances show only what that address still holds while the
- *     wallet-wide list still shows the whole supply
+ *     default wallet-wide list shows none of it (the coin lives in the
+ *     agent's own ravend wallet since v0.43.0)
  *   - a second agent cannot transfer the first agent's asset: the submit
  *     is refused by the funding gate (403 DENY INSUFFICIENT_ASSET_BALANCE
  *     with a null balance), nothing moves, and simulate agrees with zero
@@ -246,9 +247,10 @@ async function main(): Promise<void> {
       agent1Balances.json?.rvnBaseUnits === (BigInt(ONE_MILLION_RVN) - 500n * RVN_BASE_UNITS_PER_COIN - 5_000n - 3_500n).toString(),
       agent1Balances.json);
     const wideBalances = await get('/v1/wallet/balances');
-    check('wallet-wide balances still show the whole supply (500)',
+    check('wallet-wide balances are the operator wallet only: no SHARECOIN (it lives in agent-1\'s wallet since v0.43.0)',
       wideBalances.status === 200 &&
-      wideBalances.json?.assets?.find((a: any) => a.name === 'SHARECOIN')?.balanceBaseUnits === '500',
+      Array.isArray(wideBalances.json?.assets) &&
+      !wideBalances.json.assets.some((a: any) => a.name === 'SHARECOIN'),
       wideBalances.json?.assets);
 
     // Agent-2: its own wallet address holds none of SHARECOIN, so the

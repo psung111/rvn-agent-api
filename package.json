@@ -50,7 +50,8 @@
     "test:wallet": "tsx demo/wallet-test.ts",
     "test:guardrail": "tsx demo/guardrail-test.ts",
     "test:wallets": "tsx demo/per-agent-wallet-test.ts",
-    "test:per-address-assets": "tsx demo/per-address-asset-test.ts"
+    "test:per-address-assets": "tsx demo/per-address-asset-test.ts",
+    "test:agent-wallets": "tsx demo/per-agent-ravend-wallet-test.ts"
   },
-  "version": "0.42.0"
+  "version": "0.43.0"
 }

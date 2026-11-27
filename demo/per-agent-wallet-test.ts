@@ -18,10 +18,13 @@
  *     across agents
  *   - GET /v1/wallet/balances?agentId= scopes the RVN figure to the
  *     agent: two issues debit only the issuing agent's address, the
- *     other agent's balance is untouched, the wallet-wide total is the
- *     sum (operator + both agents)
- *   - simulate never provisions an address (the wallet-wide total does
- *     not move), and a later GET provisions exactly once
+ *     other agent's balance is untouched, and the wallet-wide (default
+ *     wallet) read stays at the operator seed with no agent assets
+ *     (since v0.43.0 the agents' activity lives in their own ravend
+ *     wallets, not the default wallet)
+ *   - simulate never provisions a wallet or an address (the
+ *     wallet-wide total does not move), and a later GET provisions
+ *     exactly once — inside the agent's own wallet
  *   - funding isolation on a 600 RVN mock: agent-1 issues once, then
  *     DENYs on its own drained balance while agent-2 still ALLOWs —
  *     even though the wallet-wide total could still fund the issue
@@ -287,24 +290,28 @@ async function main() {
     const address2 = a2.json.address as string;
 
     // Simulate must not provision: a fresh agent's simulate leaves the
-    // wallet-wide total at the operator seed, and the address route
-    // afterwards provisions exactly once.
+    // default wallet-wide total at the operator seed, and the address
+    // route afterwards provisions exactly once — inside the agent's own
+    // ravend wallet (v0.43.0), so the default wallet never sees the
+    // seed at all.
     const wideBefore = await req(API1, 'GET', '/v1/wallet/balances');
     const sim = await req(API1, 'POST', '/v1/intents/simulate', {
       op: 'issue', agentId: 'agent-3', name: 'SIMCOIN', qty: '100', toAddress: address1,
     });
     const wideAfterSim = await req(API1, 'GET', '/v1/wallet/balances');
-    check('simulate does not provision an address (wallet-wide total unmoved)',
+    check('simulate does not provision a wallet or an address (default wallet-wide total unmoved at 1,000,000 RVN)',
       sim.status === 200 &&
-      wideBefore.json?.rvnBaseUnits === (3_000_000n * RVN_BASE_UNITS_PER_COIN).toString() &&
-      wideAfterSim.json?.rvnBaseUnits === (3_000_000n * RVN_BASE_UNITS_PER_COIN).toString(),
+      wideBefore.json?.rvnBaseUnits === (1_000_000n * RVN_BASE_UNITS_PER_COIN).toString() &&
+      wideAfterSim.json?.rvnBaseUnits === (1_000_000n * RVN_BASE_UNITS_PER_COIN).toString(),
       { before: wideBefore.json, after: wideAfterSim.json });
     const a3 = await req(API1, 'GET', '/v1/wallet/address/agent-3');
     const wideAfterProvision = await req(API1, 'GET', '/v1/wallet/balances');
-    check('provisioning agent-3 afterwards adds exactly one 1,000,000 RVN seed to the total',
+    const bal3 = await req(API1, 'GET', '/v1/wallet/balances?agentId=agent-3');
+    check('provisioning agent-3 afterwards seeds its own wallet (1,000,000 RVN) and leaves the default wallet untouched',
       a3.status === 200 && typeof a3.json?.address === 'string' &&
-      wideAfterProvision.json?.rvnBaseUnits === (4_000_000n * RVN_BASE_UNITS_PER_COIN).toString(),
-      wideAfterProvision.json);
+      wideAfterProvision.json?.rvnBaseUnits === (1_000_000n * RVN_BASE_UNITS_PER_COIN).toString() &&
+      bal3.json?.rvnBaseUnits === (1_000_000n * RVN_BASE_UNITS_PER_COIN).toString(),
+      { wide: wideAfterProvision.json, agent3: bal3.json });
 
     // Per-agent balances: allowlist each agent's own address, issue twice
     // as agent-1, and prove only agent-1's RVN moved.
@@ -326,9 +333,9 @@ async function main() {
       bal1.json?.rvnBaseUnits === expectedAgent1 &&
       bal2.json?.rvnBaseUnits === ONE_MILLION_RVN,
       { bal1: bal1.json, bal2: bal2.json });
-    check('API wallet-wide total is the sum (operator + agent-1 + agent-2 + agent-3)',
-      balWide.json?.rvnBaseUnits === ((3_999_000n * RVN_BASE_UNITS_PER_COIN) - 10_000n).toString() &&
-      balWide.json?.assets?.length === 2,
+    check('API wallet-wide read is the operator wallet only (1,000,000 RVN, no agent assets since v0.43.0)',
+      balWide.json?.rvnBaseUnits === (1_000_000n * RVN_BASE_UNITS_PER_COIN).toString() &&
+      Array.isArray(balWide.json?.assets) && balWide.json.assets.length === 0,
       balWide.json);
 
     // ================= funding isolation on a 600 RVN mock =================

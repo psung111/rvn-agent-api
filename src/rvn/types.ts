@@ -21,6 +21,30 @@ export interface RvnNode {
   getInfo(): Promise<ChainInfo>;
   getNewAddress(label?: string): Promise<string>;
   /**
+   * Per-agent ravend wallets (v0.43.0): ravend supports several wallets
+   * in one node — `createwallet` / `loadwallet` / `listwallets` — and
+   * wallet-scoped RPC at the `/wallet/<name>` endpoint, so each agent's
+   * submits can execute inside its own wallet instead of the one shared
+   * wallet. The mock simulates this with one isolated ledger per wallet
+   * (see mock.ts); the real client routes wallet RPCs to the endpoint.
+   *
+   * `createWallet` creates the wallet and loads it (throwing when a
+   * wallet of that name already exists); `loadWallet` loads a wallet
+   * file that exists but is not loaded — e.g. after a node restart —
+   * throwing when there is no such wallet. `listWallets` names the
+   * loaded wallets (the default wallet is `''`). `withWallet` returns
+   * a view of this node scoped to the wallet: every wallet RPC on the
+   * view runs against that wallet, while node-level RPCs (chain info,
+   * fee estimate) and the asset registry stay shared. The view's
+   * `walletName` is the wallet it is scoped to, or undefined for the
+   * default wallet.
+   */
+  readonly walletName?: string;
+  createWallet(name: string): Promise<void>;
+  loadWallet(name: string): Promise<void>;
+  listWallets(): Promise<string[]>;
+  withWallet(name: string): RvnNode;
+  /**
    * `fromAddress` (v0.41.0) is the agent wallet the issuance fee and the
    * estimated miner fee are debited from. The mock debits that address
    * (seeded on provisioning); the real client ignores it — ravend pays

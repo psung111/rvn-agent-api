@@ -45,7 +45,7 @@ export const openApiDocument = {
   openapi: OPENAPI_VERSION,
   info: {
     title: 'rvn-agent-api',
-    version: '0.42.0',
+    version: '0.43.0',
     description:
       'Agent-facing API for Ravencoin assets, with a policy engine in front. ' +
       'Every submit (issue, reissue, sub-asset, unique asset, transfer) is evaluated ' +
@@ -145,10 +145,11 @@ export const openApiDocument = {
           'each asset. Only assets with a nonzero wallet balance are listed — an asset fully ' +
           'transferred out disappears from the list. All quantities are decimal strings in base ' +
           'units; polling writes nothing (no intents, no audit entries). A node that cannot answer ' +
-          'returns 502. With ?agentId= both figures are that agent\'s own wallet balance ' +
-          '(v0.41.0 for RVN, v0.42.0 for assets — the asset list is what that address holds, ' +
-          'so an agent sees only what its own address can fund; provisioning the address ' +
-          'when the agent has none).',
+          'returns 502. With ?agentId= both figures are that agent\'s own ravend wallet ' +
+          '(v0.43.0 — the agent\'s wallet, provisioned when it has none — and its wallet ' +
+          'address inside it, v0.41.0 for RVN, v0.42.0 for assets, so an agent sees only ' +
+          'what its own wallet can fund). Without it the read is the default (operator) ' +
+          'wallet, which no longer includes any agent\'s activity.',
         parameters: [
           {
             name: 'agentId',
@@ -178,7 +179,9 @@ export const openApiDocument = {
           'and tracked in the store afterwards — the same address on every call. Funding checks ' +
           'and fee debiting use this address, so one agent cannot spend another\'s RVN, and ' +
           'since v0.42.0 the funding check\'s asset leg and the mock\'s transfer debit read ' +
-          'this address too, so one agent cannot transfer another\'s assets. Under ' +
+          'this address too, so one agent cannot transfer another\'s assets. Since v0.43.0 ' +
+          'the address is minted inside the agent\'s own ravend wallet (provisioned when it ' +
+          'has none), so submits, funding checks and execution all run inside that wallet. Under ' +
           'auth, a per-agent key may only read its own agent\'s address. A node or store failure ' +
           'returns 502.',
         parameters: [
@@ -1439,6 +1442,15 @@ export const openApiDocument = {
               configured: { type: 'boolean' },
               endpoints: { type: 'integer' },
               retry: { type: 'object', additionalProperties: true },
+            },
+          },
+          wallets: {
+            type: 'object',
+            description:
+              'Per-agent ravend wallets (v0.43.0): every agent\'s submits, funding checks and ' +
+              'balances run inside its own wallet (`rvn-agent-api-<agentId>`) on the node.',
+            properties: {
+              perAgent: { type: 'boolean', const: true },
             },
           },
         },
